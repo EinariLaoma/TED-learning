@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3C8A75"/><stop offset="1" stop-color="#1F5247"/></linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".38" r=".5"><stop offset="0" stop-color="#FFE7A8" stop-opacity=".35"/><stop offset="1" stop-color="#FFE7A8" stop-opacity="0"/></radialGradient>
+    <linearGradient id="pg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FBF5E4"/><stop offset="1" stop-color="#EADFC2"/></linearGradient>
+    <linearGradient id="gd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFD978"/><stop offset="1" stop-color="#E0A23A"/></linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+  <!-- book -->
+  <g transform="translate(512 600)">
+    <path d="M0 -150 C -70 -205 -180 -215 -280 -190 L -280 150 C -180 125 -70 135 0 190 Z" fill="url(#pg)"/>
+    <path d="M0 -150 C 70 -205 180 -215 280 -190 L 280 150 C 180 125 70 135 0 190 Z" fill="url(#pg)"/>
+    <path d="M0 -150 L0 190" stroke="#C9B98E" stroke-width="8"/>
+    <g fill="none" stroke="#9DB7A8" stroke-width="14" stroke-linecap="round" opacity=".9">
+      <path d="M-225 -110 C -160 -125 -95 -120 -45 -95"/><path d="M-225 -45 C -160 -60 -95 -55 -45 -30"/><path d="M-225 20 C -170 8 -120 10 -80 25"/>
+      <path d="M45 -95 C 95 -120 160 -125 225 -110"/><path d="M45 -30 C 95 -55 160 -60 225 -45"/>
+    </g>
+    <path d="M150 -205 L150 -40 L180 -70 L210 -40 L210 -212 Z" fill="#D9573B"/>
+  </g>
+  <!-- spark -->
+  <path d="M512 150 L540 268 L650 300 L540 332 L512 450 L484 332 L374 300 L484 268 Z" fill="url(#gd)"/>
+  <circle cx="660" cy="190" r="20" fill="#FFE7A8"/>
+  <circle cx="372" cy="200" r="13" fill="#FFE7A8" opacity=".8"/>
+</svg>

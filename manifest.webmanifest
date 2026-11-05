@@ -1,0 +1,125 @@
+{
+ "id": "./",
+ "name": "TED 精读计划",
+ "short_name": "TED精读",
+ "description": "每周一篇 TED 主题精读：点词查义、整句解析、记忆复习、周考、听说跟读与成就奖励。",
+ "lang": "zh-CN",
+ "dir": "ltr",
+ "start_url": "./?source=app",
+ "scope": "./",
+ "display": "standalone",
+ "orientation": "any",
+ "background_color": "#DDEAD8",
+ "theme_color": "#DDEAD8",
+ "categories": [
+  "education",
+  "books"
+ ],
+ "icons": [
+  {
+   "src": "icons/icon-192.png",
+   "sizes": "192x192",
+   "type": "image/png",
+   "purpose": "any"
+  },
+  {
+   "src": "icons/icon-512.png",
+   "sizes": "512x512",
+   "type": "image/png",
+   "purpose": "any"
+  },
+  {
+   "src": "icons/maskable-192.png",
+   "sizes": "192x192",
+   "type": "image/png",
+   "purpose": "maskable"
+  },
+  {
+   "src": "icons/maskable-512.png",
+   "sizes": "512x512",
+   "type": "image/png",
+   "purpose": "maskable"
+  },
+  {
+   "src": "icons/icon.svg",
+   "sizes": "any",
+   "type": "image/svg+xml",
+   "purpose": "any"
+  }
+ ],
+ "shortcuts": [
+  {
+   "name": "继续精读",
+   "short_name": "精读",
+   "url": "./?source=shortcut#read",
+   "icons": [
+    {
+     "src": "icons/icon-192.png",
+     "sizes": "192x192"
+    }
+   ]
+  },
+  {
+   "name": "记忆库复习",
+   "short_name": "记忆库",
+   "url": "./?source=shortcut#mem",
+   "icons": [
+    {
+     "src": "icons/icon-192.png",
+     "sizes": "192x192"
+    }
+   ]
+  },
+  {
+   "name": "考试",
+   "url": "./?source=shortcut#exam",
+   "icons": [
+    {
+     "src": "icons/icon-192.png",
+     "sizes": "192x192"
+    }
+   ]
+  },
+  {
+   "name": "听说练习",
+   "short_name": "听说",
+   "url": "./?source=shortcut#practice",
+   "icons": [
+    {
+     "src": "icons/icon-192.png",
+     "sizes": "192x192"
+    }
+   ]
+  }
+ ],
+ "screenshots": [
+  {
+   "src": "screenshots/wide-1.png",
+   "sizes": "1280x800",
+   "type": "image/png",
+   "form_factor": "wide",
+   "label": "大屏：精读与整句解析"
+  },
+  {
+   "src": "screenshots/wide-2.png",
+   "sizes": "1280x800",
+   "type": "image/png",
+   "form_factor": "wide",
+   "label": "大屏：成就奖励"
+  },
+  {
+   "src": "screenshots/narrow-1.png",
+   "sizes": "880x1912",
+   "type": "image/png",
+   "form_factor": "narrow",
+   "label": "手机：本周精读"
+  },
+  {
+   "src": "screenshots/narrow-2.png",
+   "sizes": "880x1912",
+   "type": "image/png",
+   "form_factor": "narrow",
+   "label": "手机：点词查义"
+  }
+ ]
+}
