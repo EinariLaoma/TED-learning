@@ -83,7 +83,7 @@ function putSen(id) { LS.set("sen", SEN); if (Cloud.db) Cloud.db.doc(Cloud.base 
 function putAI(id) { LS.set("ai", AIC); if (Cloud.db) Cloud.db.doc(Cloud.base + "/ai/" + id).set({ v: AIC[id] }).catch(() => {}); }
 function loadLocal() {
   const s = LS.get("state"); if (s && s.v === 1) S = Object.assign(freshState(), s, { set: Object.assign(freshState().set, s.set || {}) });
-  VOC = LS.get("voc") || {}; SEN = LS.get("sen") || {}; AIC = LS.get("ai") || {};
+  VOC = LS.get("voc") || {}; SEN = LS.get("sen") || {}; AIC = LS.get("ai") || {}; if (FULL) TR = LS.get("tr") || {};
 }
 async function initCloud() {
   if (PWA) { initPWA(); return; }
@@ -128,6 +128,7 @@ const isMobile = () => isIOS() || /Android/i.test(navigator.userAgent);
 function initPWA() {
   document.documentElement.classList.toggle("standalone", isStandalone());
   Cloud.sample = makeAI();
+  setTimeout(() => { ensureDict().then(() => renderChrome()).catch(() => {}); }, 1200);
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(reg => {
@@ -211,7 +212,7 @@ function aiErr(e) {
 }
 
 /* ---------- backup / sync between devices ---------- */
-function backupObj() { return { app: "ted-jingdu", v: 1, at: Date.now(), from: PWA ? "app" : "claude", S, VOC, SEN, AIC }; }
+function backupObj() { return { app: "ted-jingdu", v: 1, at: Date.now(), from: PWA ? "app" : "claude", S, VOC, SEN, AIC, TR: FULL ? JSON.parse(JSON.stringify(TR, (k, v) => k === "audio" ? null : v)) : undefined }; }
 async function exportBackup() { await saveFile("TED精读_备份_" + todayK() + ".json", new Blob([JSON.stringify(backupObj())], { type: "application/json" })); }
 function mergeBackup(b) {
   const L = S, Rm = Object.assign(freshState(), b.S);
@@ -228,6 +229,9 @@ function mergeBackup(b) {
   out.prog = {}; new Set(Object.keys(L.prog).concat(Object.keys(Rm.prog || {}))).forEach(k => { out.prog[k] = [...new Set((L.prog[k] || []).concat((Rm.prog || {})[k] || []))]; });
   const doneIds = new Set(out.done.map(d => d.a)); out.abandoned = [...new Set(L.abandoned.concat(Rm.abandoned || []))].filter(x => !doneIds.has(x));
   if ((L.final && L.final.pass) || (Rm.final && Rm.final.pass)) out.final = Object.assign({}, newer.final || L.final || Rm.final, { pass: true });
+  ["tprog", "mdone"].forEach(f => { out[f] = {}; new Set(Object.keys(L[f] || {}).concat(Object.keys(Rm[f] || {}))).forEach(k => { out[f][k] = [...new Set(((L[f] || {})[k] || []).concat((Rm[f] || {})[k] || []))]; }); });
+  out.rmod = Object.assign({}, Rm.rmod || {}, L.rmod || {});
+  if (FULL && b.TR) Object.entries(b.TR).forEach(([k, v]) => { if (AMAP[k] && v && v.paras && !TR[k]) { TR[k] = Object.assign(v, { audio: null }); } });
   out.stats = { listen: Math.max(L.stats.listen || 0, (Rm.stats || {}).listen || 0), speak: Math.max(L.stats.speak || 0, (Rm.stats || {}).speak || 0) };
   S = out;
   let nv = 0, ns = 0;
@@ -242,7 +246,7 @@ function importBackup(file) {
     let b; try { b = JSON.parse(fr.result); } catch (e) { toast("文件无法读取，请选择导出的 .json 备份"); return; }
     if (!b || b.app !== "ted-jingdu" || !b.S) { toast("这不是 TED 精读的备份文件"); return; }
     const r = mergeBackup(b);
-    save(); LS.set("voc", VOC); LS.set("sen", SEN); LS.set("ai", AIC);
+    save(); LS.set("voc", VOC); LS.set("sen", SEN); LS.set("ai", AIC); if (FULL) saveTR();
     if (Cloud.db) { Object.keys(VOC).forEach(k => putVoc(k)); Object.keys(SEN).forEach(id => putSen(id)); Object.keys(AIC).forEach(id => putAI(id)); }
     checkBadges(); render();
     modal(`<h2>导入完成</h2><p class="muted">新增单词 ${r.nv} 个、句子 ${r.ns} 句；已完成文章、连续学习天数、卡片和徽章已合并（经验和金币取两边较大值）。</p><div class="acts"><button class="btn" data-act="close">好的</button></div>`);
@@ -253,7 +257,7 @@ function importBackup(file) {
 /* ---------- derived ---------- */
 const isDone = id => S.done.some(d => d.a === id);
 const doneSet = () => new Set(S.done.map(d => d.a));
-function progOf(id) { const a = AMAP[id]; const p = S.prog[id]; return p ? Math.min(1, p.length / a.sents.length) : 0; }
+function progOf(id) { if (hasTR(id)) { const X = TX(id); return Math.min(1, tprog(id).size / X.flat.length); } const a = AMAP[id]; const p = S.prog[id]; return p ? Math.min(1, p.length / a.sents.length) : 0; }
 function streak() {
   const set = new Set(S.days); let n = 0; let k = todayK();
   if (!set.has(k)) k = addDays(k, -1);
@@ -356,29 +360,36 @@ function screenMode() {
   const col = LS.get("sidecol"); document.documentElement.classList.toggle("sidecol", !!col);
 }
 function secName() { if (VIEW === "read" && READ_ID) return AMAP[READ_ID].titleZh; return NAVMAP[VIEW].n; }
+function subsOf(n) { if (n.v === "read" && READ_ID && FULL && hasTR(READ_ID)) return [["导读短文", "mod-0"]].concat(TX(READ_ID).mods.map((m, i) => ["第 " + (i + 1) + " 部分" + (m.t0 != null ? " · " + fmtT(m.t0) : ""), "mod-" + (i + 1)])); return n.subs; }
 function renderChrome() {
   const nv = Object.keys(VOC).length, ns = Object.keys(SEN).length, due = dueCards().length;
   // sidebar
   $("#side").innerHTML = `<div class="brand">${PWA ? '<img class="logo" src="icons/icon-192.png" alt="">' : '<div class="logo">TED</div>'}<div class="bt"><b>TED 精读计划</b><span>${S.done.length}/20 篇 · Lv.${levelOf(S.xp).i}</span></div></div>
   <nav class="nav">${NAV.map(n => `<button class="ni ${VIEW === n.v ? "on" : ""}" data-act="go" data-v="${n.v}" title="${n.n}"><span class="ic">${I[n.ic]}</span><span class="no">${n.no}</span><span class="lbl">${n.n}</span></button>
-  ${VIEW === n.v && n.subs.length ? `<div class="sub">${n.subs.map((s, j) => `<button data-act="sub" data-v="${n.v}" data-a="${s[1]}"><span class="no">${n.no}.${j + 1}</span>${esc(s[0])}</button>`).join("")}</div>` : ""}`).join("")}</nav>
+  ${VIEW === n.v && subsOf(n).length ? `<div class="sub">${subsOf(n).map((s, j) => `<button data-act="sub" data-v="${n.v}" data-a="${s[1]}"><span class="no">${n.no}.${j + 1}</span>${esc(s[0])}</button>`).join("")}</div>` : ""}`).join("")}</nav>
   <div class="sidefoot">${PWA ? (isStandalone() ? "已安装 · 离线可用<br>数据保存在本设备" : "离线可用 · 数据保存在本设备") : Cloud.db ? "数据已云端同步，手机与电脑通用" : "数据保存在本机浏览器"}<div class="faint" style="margin-top:4px">版本 ${APP_VER}</div></div>`;
   const title = `<button class="capsule" data-act="toc">目录 ${I.down}</button><div class="bartitle"><b>TED 精读</b><span class="dot">·</span><span class="secn">${esc(secName())}</span></div>`;
   $("#topbar").innerHTML = title + `<div class="stat"><span>${flameSmall()} 连续 <b class="num">${streak()}</b> 天</span><span>XP <b class="num">${S.xp}</b></span><span>金币 <b class="num">${S.coins}</b></span></div><button class="iconbtn" data-act="screen" title="屏幕选择">${I.screen}</button>`;
   $("#bottombar").innerHTML = title + `<button class="mempill" data-act="go" data-v="mem">${I.mem}<span class="num">${nv}</span></button><button class="iconbtn" data-act="screen" title="屏幕选择">${I.screen}</button>`;
   const recent = Object.values(VOC).sort((a, b) => b.l - a.l).slice(0, 14);
   $("#membar").innerHTML = `<div class="mtitle">${I.mem}记忆栏</div><span class="muted num" style="white-space:nowrap">单词 ${nv} · 句子 ${ns} · 待复习 ${due}</span>
-  <div class="chips">${recent.length ? recent.map(v => `<button class="chip" data-act="memword" data-k="${esc(v.k)}">${esc(LEX[v.k] ? LEX[v.k].w : v.k)}</button>`).join("") : '<span class="faint">阅读时点击单词，就会出现在这里</span>'}</div>
+  <div class="chips">${recent.length ? recent.map(v => `<button class="chip" data-act="memword" data-k="${esc(v.k)}">${esc(lx(v.k) ? lx(v.k).w : v.k)}</button>`).join("") : '<span class="faint">阅读时点击单词，就会出现在这里</span>'}</div>
   <button class="btn sm" data-act="go" data-v="mem" data-a="s-flash">强化复习</button>`;
 }
 const flameSmall = () => '<span style="color:#E4572E">●</span>';
 function render() {
   applySettings(); renderChrome();
-  const v = $("#view"); stopSpeak(true);
+  const v = $("#view"); stopSpeak(true); if (VIEW !== "read" && VIEW !== "practice" && AUD.el && !AUD.el.paused) AUD.el.pause();
+  if (FULL && ((VIEW === "read" && READ_ID && hasTR(READ_ID)) || (VIEW === "practice" && PR_ID && hasTR(PR_ID))) && (!window.nlp || !DICT)) {
+    v.innerHTML = `<div class="empty" style="margin-top:20px">正在载入词典和句法分析组件…</div>`;
+    ensureFull().then(() => render()).catch(() => { v.innerHTML = `<div class="empty" style="margin-top:20px">组件加载失败，请检查网络后刷新 App。</div>`; });
+    return;
+  }
   const fn = { home: vHome, read: vRead, lib: vLib, mem: vMem, exam: vExam, practice: vPractice, reward: vReward, export: vExport, prefs: vPrefs }[VIEW];
   v.innerHTML = fn();
   if (VIEW === "read") afterRead();
   if (VIEW === "practice") afterPractice();
+  if (FULL) drawBar();
   if (pendingRoll) showRollModal();
 }
 function rerenderLight() { renderChrome(); }
@@ -391,6 +402,7 @@ function go(v, anchor) {
 }
 function doSub(v, a) {
   if (v === "read" && a.startsWith("m-")) { READ_MODE = a.slice(2); setReadMode(); return; }
+  if (v === "read" && a.startsWith("mod-")) { setMod(READ_ID, +a.slice(4)); renderChrome(); return; }
   if (v === "lib" && a.startsWith("c-")) { LIB_CAT = a.slice(2); render(); return; }
   if (a === "s-flash" && v === "mem") { startFlash(); }
   const el = document.getElementById(a); if (el) el.scrollIntoView({ behavior: S.set.motion ? "smooth" : "auto", block: "start" });
@@ -412,13 +424,15 @@ function vHome() {
     <div class="push">
       <svg class="art" viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="${c1}"/><circle cx="70" cy="34" r="24" fill="${c2}"/></svg>
       <div class="eyebrow"><span class="tag" style="background:${c1};color:#FFFFFF">${a.cat}</span><span>${esc(a.sub)}</span><span>·</span><span>第 ${S.done.length + (done ? 0 : 1)} 篇 / 20</span>${S.cur.bonus ? '<span class="tag g">额外学习</span>' : ""}</div>
-      <h1>${esc(a.title)}</h1><div class="zh">${esc(a.titleZh)} · ${a.words} 词 · ${a.sents.length} 句</div>
-      <div class="src">延伸观看：TED 演讲《${esc(a.ted.title)}》— ${esc(a.ted.speaker)}（${esc(a.ted.event)}，${a.ted.year}）</div>
+      ${hasTR(a.id) ? `<h1>${esc(a.ted.title)}</h1><div class="zh">${esc(a.ted.speaker)} · ${esc(a.titleZh)} · 全文 ${TR[a.id].words} 词 · ${TX(a.id).mods.length} 个部分${TR[a.id].audio ? " · 已导入现场原声" : ""}</div>` :
+      `<h1>${esc(a.title)}</h1><div class="zh">${esc(a.titleZh)} · 导读 ${a.words} 词</div>
+      <div class="src">TED 演讲《${esc(a.ted.title)}》— ${esc(a.ted.speaker)}（${esc(a.ted.event)}，${a.ted.year}）</div>`}
       <div class="prog" style="margin-top:14px"><div class="bar"><i style="width:${Math.round(p * 100)}%"></i></div><span class="num">${Math.round(p * 100)}%</span></div>
       <div class="row" style="margin-top:14px">
         ${done ? `<span class="tag g">本周已完成</span><button class="btn ghost" data-act="read" data-id="${a.id}">再读一遍</button><button class="btn" data-act="go" data-v="lib">去资源库选下一篇</button>` :
-        `<button class="btn" data-act="read" data-id="${a.id}">${p > 0 ? "继续精读" : "开始精读"}</button><button class="btn ghost" data-act="listen" data-id="${a.id}">${I.ear}听全文</button>`}
+        `<button class="btn" data-act="read" data-id="${a.id}">${p > 0 ? "继续精读" : "开始精读"}</button>${hasTR(a.id) ? (TR[a.id].audio ? `<button class="btn ghost" data-act="go" data-v="practice" data-a="s-listen">${I.ear}听现场原声</button>` : `<button class="btn ghost" data-act="homeaudio">${I.ear}导入现场原声</button>`) : FULL ? `<button class="btn ghost" data-act="import" data-id="${a.id}">导入演讲全文</button>` : `<button class="btn ghost" data-act="listen" data-id="${a.id}">${I.ear}听全文</button>`}`}
       </div>
+      ${planHTML(a, wd, done)}
       <div class="week">${days.join("")}</div>
       <div class="faint" style="font-size:11.5px;margin-top:6px">本周第 ${wd + 1} 天 · 金色为最后 3 天（可选下周主题）· 绿色为已学习的日子</div>
     </div>
@@ -436,11 +450,18 @@ function vHome() {
     <div class="topics">${CATS.map(c => `<button class="topic ${S.nextTopic === c ? "on" : ""}" data-act="topic" data-c="${c}" ${!canPick || !remain(c) ? "disabled" : ""}>${c} <span class="num" style="opacity:.7">${remain(c)}</span></button>`).join("")}</div></div></div>
   <div class="sec" id="s-rules"><div class="sechead"><h2><span class="no">1.3</span>学习规则</h2></div>
     <div class="rules">
-      <div class="rule">${I.calendar}<div><b>一周一篇</b>每周推送一篇精读文，读完并通过小测验即算完成。</div></div>
+      <div class="rule">${I.calendar}<div><b>一周一篇</b>每周推送一场 TED 演讲。导入全文后自动拆成几个部分，按计划分几天读完，最后通过小测验即算完成。</div></div>
       <div class="rule">${I.flag}<div><b>可以延期</b>到期没读完，可延期一周继续，也可以换新文章。</div></div>
       <div class="rule">${I.swap}<div><b>换文章要"放弃"</b>当前文章未完成时，在资源库选别的文章需点击"放弃"。</div></div>
       <div class="rule">${I.gift}<div><b>连续越久奖励越大</b>连续 3/7/14/30 天，经验倍率 ×1.2/1.5/2/3，卡片也更稀有。</div></div>
     </div></div>`;
+}
+function planHTML(a, wd, done) {
+  if (!hasTR(a.id) || done) return "";
+  const X = TX(a.id), n = X.mods.length, md = new Set((S.mdone || {})[a.id] || []);
+  const today = Math.min(n - 1, Math.floor(Math.min(6, wd) * n / 6));
+  return `<div class="plan"><div class="row" style="justify-content:space-between"><b>本周分阶段计划</b><span class="muted" style="font-size:12px">${md.size}/${n} 部分完成 · 建议每天约 ${Math.ceil(n / 6)} 部分</span></div>
+  <div class="planrow">${X.mods.map((m, i) => `<button class="pchip ${md.has(i) ? "ok" : ""} ${i === today && !md.has(i) ? "today" : ""}" data-act="readmod" data-id="${a.id}" data-i="${i + 1}"><b>${i + 1}</b><span>${md.has(i) ? "已读" : i === today ? "今天" : Math.round(modProg(a.id, i) * 100) + "%"}</span></button>`).join("")}<span class="pchip quiz ${progOf(a.id) >= 0.9 ? "today" : ""}"><b>测</b><span>完成</span></span></div></div>`;
 }
 function vAllDone() {
   return `<div class="panel" style="text-align:center;padding:30px"><h1>20 篇已全部完成</h1><p class="muted">你已经读完了整个资源库。最后一步：通过终极考试（80 分及格），领取终极奖励。</p>
@@ -466,9 +487,9 @@ function vLib() {
     return `<button class="acard" data-act="libopen" data-id="${a.id}"><span class="stripe" style="background:${c1}"></span>
     <span class="state">${d ? '<span class="tag g">已完成</span>' : cur ? '<span class="tag">本周</span>' : ab ? '<span class="tag r">已放弃</span>' : ""}</span>
     <span class="faint" style="font-size:11.5px">${a.cat} · ${esc(a.sub)}</span><h3>${esc(a.title)}</h3><span class="zh">${esc(a.titleZh)}</span>
-    <span class="meta"><span>${a.words} 词</span><span>·</span><span>TED ${a.ted.year} · ${esc(a.ted.speaker)}</span>${p > 0 && !d ? `<span class="tag">${Math.round(p * 100)}%</span>` : ""}</span></button>`;
+    <span class="meta">${hasTR(a.id) ? `<span class="tag">全文 ${TX(a.id).mods.length} 部分${TR[a.id].audio ? " · 原声" : ""}</span>` : `<span>导读 ${a.words} 词</span>`}<span>·</span><span>TED ${a.ted.year} · ${esc(a.ted.speaker)}</span>${p > 0 && !d ? `<span class="tag">${Math.round(p * 100)}%</span>` : ""}</span></button>`;
   }).join("")}</div>
-  <p class="faint" style="font-size:12px;margin-top:14px">每篇精读文为围绕对应 TED 演讲主题撰写的原创文本，卡片上标注的是可延伸观看的真实 TED 演讲。</p>`;
+  <p class="faint" style="font-size:12px;margin-top:14px">${FULL ? "每篇先附一段约 250 词的原创导读；在阅读页点「导入演讲全文」，把 TED 官网的讲稿粘贴进来，就能分部分精读整场演讲。导入的讲稿和音频只保存在这台设备上。" : "每篇精读文为围绕对应 TED 演讲主题撰写的原创文本，卡片上标注的是可延伸观看的真实 TED 演讲。App 版支持导入演讲全文与现场音频。"}</p>`;
 }
 function libOpen(id) {
   const a = AMAP[id], cur = S.cur.art ? AMAP[S.cur.art] : null;
@@ -484,39 +505,45 @@ function libOpen(id) {
 
 /* ---------- views: reader ---------- */
 function vRead() {
-  const a = AMAP[READ_ID]; const vset = new Set(Object.keys(VOC)); const p = progOf(a.id);
-  const isCur = a.id === S.cur.art, d = isDone(a.id);
-  const paras = a.paras.map(pi => {
-    const en = pi.map(si => { const s = a.sents[si]; return `<span class="sent" data-s="${si}">${s.toks.map((t, ti) => t[1] ? `<span class="w${a.keys[t[1]] ? " kw" : ""}${vset.has(t[1]) ? " seen" : ""}" data-t="${ti}">${esc(t[0])}</span>${t[2]}` : esc(t[0]) + t[2]).join("")}</span>`; }).join(" ");
-    const zh = pi.map(si => esc(a.sents[si].zh)).join("");
-    return `<p class="para">${en}</p><p class="zhp"${READ_MODE === "en" ? " hidden" : ""}>${zh}</p>`;
-  }).join("");
-  return `<div class="rhead"><div class="row"><span class="tag" style="background:${CATCOL[a.cat][0]};color:#FFFFFF">${a.cat}</span><span class="muted">${esc(a.sub)}</span>${d ? '<span class="tag g">已完成</span>' : isCur ? '<span class="tag">本周精读</span>' : '<span class="tag r">预览</span>'}</div>
-  <h1>${esc(a.title)}</h1><div class="muted">${esc(a.titleZh)}</div>
-  <div class="faint" style="font-size:12px">延伸观看：<a href="${esc(a.ted.url)}" target="_blank" rel="noopener">${esc(a.ted.title)}</a> — ${esc(a.ted.speaker)}，${a.ted.year}</div></div>
+  const a = AMAP[READ_ID]; const p = progOf(a.id);
+  const isCur = a.id === S.cur.art, d = isDone(a.id), full = hasTR(a.id);
+  RMOD_VIEW = full ? curMod(a.id) : 0;
+  const body = RMOD_VIEW === 0 ? introHTML(a) : moduleHTML(a.id, RMOD_VIEW);
+  const cta = FULL && !full ? `<div class="fullcta"><div><b>这是导读短文（约 250 词）</b><div class="muted" style="font-size:12.5px">导入这场 TED 演讲的完整讲稿后，会拆成几个部分分阶段精读，查词、句子解析、考试都覆盖全文，还能导入现场音频逐句跟听。</div></div><button class="btn" data-act="import" data-id="${a.id}">导入演讲全文</button></div>` : "";
+  return `<div class="rhead"><div class="row"><span class="tag" style="background:${CATCOL[a.cat][0]};color:#FFFFFF">${a.cat}</span><span class="muted">${esc(a.sub)}</span>${d ? '<span class="tag g">已完成</span>' : isCur ? '<span class="tag">本周精读</span>' : '<span class="tag r">预览</span>'}${full ? `<span class="tag">全文 ${TX(a.id).mods.length} 部分 · ${TR[a.id].words} 词</span>` : ""}</div>
+  <h1>${esc(full ? a.ted.title : a.title)}</h1><div class="muted">${esc(full ? a.ted.speaker + " · " + a.titleZh : a.titleZh)}</div>
+  <div class="faint" style="font-size:12px">TED 演讲：<a href="${esc(a.ted.url)}" target="_blank" rel="noopener">${esc(a.ted.title)}</a> — ${esc(a.ted.speaker)}，${a.ted.year}${full ? ` · <button class="linkbtn" data-act="import" data-id="${a.id}">重新导入</button>` : ""}</div></div>
+  ${cta}
   <div class="rtool glass">
     <div class="seg" role="tablist"><button data-act="rmode" data-m="en" class="${READ_MODE === "en" ? "on" : ""}">原文</button><button data-act="rmode" data-m="bi" class="${READ_MODE === "bi" ? "on" : ""}">对照</button><button data-act="rmode" data-m="zh" class="${READ_MODE === "zh" ? "on" : ""}">中文</button></div>
     <div class="seg"><button data-act="fs" data-d="-1" title="减小字号">A−</button><button data-act="fs" data-d="1" title="增大字号">A+</button></div>
-    <button class="btn sm ghost" data-act="listen" data-id="${a.id}">${I.ear}听</button>
+    ${full ? `<button class="btn sm ${TR[a.id].audio ? "" : "ghost"}" data-act="audiopanel">${I.ear}原声</button>` : ""}<button class="btn sm ghost" data-act="listen" data-id="${a.id}">${I.vol}${full ? "朗读" : "听"}</button>
     <div class="prog"><div class="bar"><i id="rbar" style="width:${Math.round(p * 100)}%"></i></div><span class="num" id="rpct">${Math.round(p * 100)}%</span></div>
   </div>
-  <div class="reader${READ_MODE === "zh" ? " zhonly" : ""}" id="reader">${paras}</div>
+  ${full ? `<div id="modtabs">${modTabs(a.id)}</div>` : ""}
+  <div class="reader${READ_MODE === "zh" ? " zhonly" : ""}" id="reader">${body}</div>
   <div class="rfoot"><div class="legend"><span><i style="background:color-mix(in srgb,var(--gold) 35%,transparent)"></i>重点词</span><span><i style="background:transparent;border-bottom:2px dotted var(--accent)"></i>已点学</span><span>单击单词：查词 · 双击或长按：整句解析</span></div>
   ${isCur && !d ? `<button class="btn" data-act="finish" id="finbtn" ${p < 0.9 ? "disabled" : ""}>完成精读并测验</button>` : ""}</div>
-  ${isCur && !d ? `<p class="faint" style="font-size:12px">在英文原文或对照模式下逐段阅读，句子停留在屏幕上足够时间才计入进度；读到 90% 即可开始完成测验。</p>` : ""}`;
+  ${isCur && !d ? `<p class="faint" style="font-size:12px">${full ? "逐个部分阅读，句子在屏幕上停留足够时间才计入进度；全文读到 90% 即可做完成测验。每读完一个部分都有奖励。" : "在英文原文或对照模式下逐段阅读，句子停留在屏幕上足够时间才计入进度；读到 90% 即可开始完成测验。"}</p>` : ""}`;
 }
 let readObs = null, readTick = null;
 function afterRead() {
   const a = AMAP[READ_ID]; if (readObs) readObs.disconnect(); clearInterval(readTick);
-  const set = new Set(S.prog[a.id] || []); const vis = new Map();
-  readObs = new IntersectionObserver(es => { es.forEach(e => { const i = +e.target.dataset.s; if (e.isIntersecting) { if (!vis.has(i)) vis.set(i, Date.now()); } else vis.delete(i); }); }, { threshold: 0.6 });
+  const set = new Set(S.prog[a.id] || []); const tset = tprog(a.id); const vis = new Map();
+  readObs = new IntersectionObserver(es => { es.forEach(e => { const k = (e.target.dataset.m || "") + ":" + e.target.dataset.s; if (e.isIntersecting) { if (!vis.has(k)) vis.set(k, Date.now()); } else vis.delete(k); }); }, { threshold: 0.6 });
   $$(".sent", $("#reader")).forEach(s => readObs.observe(s));
   readTick = setInterval(() => {
     if (!$("#reader")) { clearInterval(readTick); return; }
     if (READ_MODE === "zh" || document.hidden) return;
-    let dirty = false; const now = Date.now();
-    vis.forEach((t0, i) => { if (set.has(i)) return; const need = Math.max(2000, a.sents[i].toks.length * 230); if (now - t0 >= need) { set.add(i); dirty = true; } });
-    if (dirty) { S.prog[a.id] = [...set]; const p = progOf(a.id); const b = $("#rbar"); if (b) { b.style.width = Math.round(p * 100) + "%"; $("#rpct").textContent = Math.round(p * 100) + "%"; } const f = $("#finbtn"); if (f) f.disabled = p < 0.9; saveSoon(); }
+    let dirty = false, tdirty = false; const now = Date.now();
+    vis.forEach((t0, k) => {
+      const [m, si] = k.split(":"), i = +si;
+      if (m === "t") { if (tset.has(i)) return; const s = getS(a.id, i, "t"); const need = Math.max(2000, (s ? s.toks.filter(x => x[1]).length : 10) * 230); if (now - t0 >= need) { tset.add(i); tdirty = true; const el = $(`.sent[data-m="t"][data-s="${i}"]`); if (el) el.classList.add("rd"); } }
+      else { if (set.has(i)) return; const need = Math.max(2000, a.sents[i].toks.length * 230); if (now - t0 >= need) { set.add(i); dirty = true; } }
+    });
+    if (dirty) S.prog[a.id] = [...set];
+    if (tdirty) { S.tprog = S.tprog || {}; S.tprog[a.id] = [...tset]; checkModDone(a.id); }
+    if (dirty || tdirty) { updReadProg(); saveSoon(); }
   }, 700);
 }
 let ssT = null; function saveSoon() { clearTimeout(ssT); ssT = setTimeout(() => { markStudy(); save(); }, 1500); }
@@ -531,32 +558,32 @@ function openRead(id) { READ_ID = id; closeModal(); go("read"); }
 let clickT = null, lpT = null, lpFired = false, lastTap = null;
 function onWordDown(e) {
   const w = e.target.closest(".w"); if (!w) return; lpFired = false;
-  clearTimeout(lpT); lpT = setTimeout(() => { lpFired = true; const s = w.closest(".sent"); openSent(READ_ID, +s.dataset.s); }, 520);
+  clearTimeout(lpT); lpT = setTimeout(() => { lpFired = true; const s = w.closest(".sent"); openSent(READ_ID, +s.dataset.s, s.dataset.m); }, 520);
 }
 function onWordUp() { clearTimeout(lpT); }
 function onWordClick(e) {
   const w = e.target.closest(".w"); if (!w || !$("#reader") || !$("#reader").contains(w)) return;
   if (lpFired) { lpFired = false; return; }
   const s = w.closest(".sent"); const key = s.dataset.s + ":" + w.dataset.t;
-  if (clickT && lastTap === s.dataset.s) { clearTimeout(clickT); clickT = null; openSent(READ_ID, +s.dataset.s); return; }
+  if (clickT && lastTap === s.dataset.s) { clearTimeout(clickT); clickT = null; openSent(READ_ID, +s.dataset.s, s.dataset.m); return; }
   lastTap = s.dataset.s;
-  clickT = setTimeout(() => { clickT = null; openWord(READ_ID, +s.dataset.s, +w.dataset.t, w); }, 260);
+  clickT = setTimeout(() => { clickT = null; openWord(READ_ID, +s.dataset.s, +w.dataset.t, w, s.dataset.m); }, 260);
 }
-function recordWord(key, aid, si) {
+function recordWord(key, aid, si, m) {
   const now = Date.now(); const v = VOC[key];
-  if (v) { v.n++; v.l = now; } else VOC[key] = { k: key, a: aid, s: si, n: 1, t: now, l: now, box: 0, due: todayK() };
+  if (v) { v.n++; v.l = now; } else { VOC[key] = { k: key, a: aid, s: si, n: 1, t: now, l: now, box: 0, due: todayK() }; if (m === "t") VOC[key].m = "t"; }
   putVoc(key); markStudy(); checkBadges();
-  $$(".w").forEach(el => { const sEl = el.closest(".sent"); if (!sEl) return; const t = AMAP[READ_ID].sents[+sEl.dataset.s].toks[+el.dataset.t]; if (t[1] === key) el.classList.add("seen"); });
+  $$(".w").forEach(el => { const sEl = el.closest(".sent"); if (!sEl || !READ_ID) return; const ss = getS(READ_ID, +sEl.dataset.s, sEl.dataset.m); const t = ss && ss.toks[+el.dataset.t]; if (t && t[1] === key) el.classList.add("seen"); });
   renderChrome();
 }
-function recordSent(aid, si) {
-  const id = aid + "_" + si; const now = Date.now();
-  if (SEN[id]) { SEN[id].n++; SEN[id].l = now; } else SEN[id] = { a: aid, s: si, n: 1, t: now, l: now };
+function recordSent(aid, si, m) {
+  const id = (m === "t" ? "T_" : "") + aid + "_" + si; const now = Date.now();
+  if (SEN[id]) { SEN[id].n++; SEN[id].l = now; } else { SEN[id] = { a: aid, s: si, n: 1, t: now, l: now }; if (m === "t") SEN[id].m = "t"; }
   putSen(id); markStudy(); checkBadges(); renderChrome();
 }
-function wordInfoHTML(key, aid, si, ti) {
-  const L = LEX[key] || { w: key.replace(/^~/, ""), ph: "", tr: [], def: [], ex: {}, tags: [] };
-  const a = AMAP[aid], s = a ? a.sents[si] : null, tok = s && ti != null ? s.toks[ti] : null;
+function wordInfoHTML(key, aid, si, ti, m) {
+  const L = lx(key) || { w: key.replace(/^~/, ""), ph: "", tr: [], def: [], ex: {}, tags: [] };
+  const a = AMAP[aid], s = a ? getS(aid, si, m) : null, tok = s && ti != null && ti >= 0 ? s.toks[ti] : null;
   const K = a && a.keys[key];
   let formLine = "";
   if (tok && tok[0].toLowerCase() !== L.w.toLowerCase()) formLine = `<div class="muted" style="font-size:13px">原文形式 <b>${esc(tok[0])}</b>${tok[4] ? "：" + esc(L.w) + " 的" + esc(tok[4]) : ""}</div>`;
@@ -568,15 +595,15 @@ function wordInfoHTML(key, aid, si, ti) {
     const ss = ARTS[ai2].sents[s2]; const sf = ss.toks.find(t => t[1] === key); return `<div class="ex"><div class="en">${hl(ss.en, sf ? sf[0] : L.w)}</div><div class="zh">${esc(ss.zh)}</div><div class="from">${esc(ARTS[ai2].titleZh)}</div></div>`;
   }).join("");
   const keyBlk = K ? `<div class="blk"><h4>用法</h4><div style="font-size:14px">${esc(K.use)}</div><div class="exs" style="margin-top:6px"><div class="ex"><div class="en">${hl(K.ex, L.w)}</div><div class="zh">${esc(K.exZh)}</div><div class="from">例句</div></div></div></div>` : "";
-  const aiId = "w_" + safeId(key) + "_" + aid.slice(0, 6) + si;
-  const aiBlk = AIC[aiId] ? aiWordHTML(AIC[aiId]) : (Cloud.sample ? `<button class="btn sm ghost" style="margin-top:12px" data-act="aiword" data-k="${esc(key)}" data-a="${aid}" data-s="${si}">${I.spark}AI 补充用法与例句</button><div id="aiw"></div>` : PWA ? `<button class="btn sm ghost" style="margin-top:12px" data-act="go" data-v="prefs" data-a="s-ai">${I.spark}开启 AI 补充（需在设置中填写密钥）</button>` : "");
+  const aiId = "w_" + safeId(key) + "_" + (aid || "").slice(0, 6) + (m === "t" ? "t" : "") + si;
+  const aiBlk = !aid ? "" : AIC[aiId] ? aiWordHTML(AIC[aiId]) : (Cloud.sample ? `<button class="btn sm ghost" style="margin-top:12px" data-act="aiword" data-k="${esc(key)}" data-a="${aid}" data-s="${si}" data-m="${m || ""}">${I.spark}AI 补充用法与例句</button><div id="aiw"></div>` : PWA ? `<button class="btn sm ghost" style="margin-top:12px" data-act="go" data-v="prefs" data-a="s-ai">${I.spark}开启 AI 补充（需在设置中填写密钥）</button>` : "");
   return `<div class="row" style="align-items:baseline"><span class="wd">${esc(L.w)}</span>${L.ph ? `<span class="ph">/${esc(L.ph)}/</span>` : ""}</div>
   <div class="row" style="margin-top:6px"><button class="say" data-act="say" data-text="${esc(L.w)}" data-acc="us">${I.vol}美音</button><button class="say" data-act="say" data-text="${esc(L.w)}" data-acc="uk">${I.vol}英音</button>${tok && tok[3] ? `<span class="tag">${esc(tok[3])}</span>` : ""}${(L.tags || []).slice(0, 5).map(t => `<span class="tag g">${t}</span>`).join("")}</div>
   ${formLine}
   <div class="blk"><h4>释义</h4><ul class="trl">${(L.tr || []).map(t => `<li>${esc(t)}</li>`).join("") || "<li class='muted'>专有名词或少见词，暂无词典释义</li>"}</ul>${(L.def || []).length ? `<div class="faint" style="font-size:12.5px;margin-top:4px">${esc(L.def[0])}</div>` : ""}</div>
   ${ex ? `<div class="blk"><h4>词形变化</h4><div style="font-size:13px">${ex}</div></div>` : ""}
   ${keyBlk}
-  ${s ? `<div class="blk"><h4>原文例句</h4><div class="exs"><div class="ex"><div class="en">${hl(s.en, surface)}</div><div class="zh">${esc(s.zh)}</div><div class="from">${esc(a.titleZh)} <button class="say" style="margin-left:6px" data-act="say" data-text="${esc(s.en)}">${I.vol}读句子</button></div></div></div></div>` : ""}
+  ${s ? `<div class="blk"><h4>原文例句</h4><div class="exs"><div class="ex"><div class="en">${hl(s.en, surface)}</div>${s.zh && !s.zhPara ? `<div class="zh">${esc(s.zh)}</div>` : ""}<div class="from">${esc(a.titleZh)}${m === "t" ? " · 演讲全文" : ""} <button class="say" style="margin-left:6px" data-act="say" data-text="${esc(s.en)}">${I.vol}读句子</button></div></div></div></div>` : ""}
   ${others ? `<div class="blk"><h4>资源库中的其他例句</h4><div class="exs">${others}</div></div>` : ""}
   ${aiBlk}`;
 }
@@ -584,18 +611,20 @@ function aiWordHTML(r) {
   if (!r) return "";
   return `<div class="ai"><b>AI 补充</b>${r.ctx ? `<div>语境义：${esc(r.ctx)}</div>` : ""}${r.use ? `<div style="margin-top:4px">${esc(r.use)}</div>` : ""}${(r.coll || []).length ? `<div style="margin-top:4px">搭配：${r.coll.map(esc).join("；")}</div>` : ""}${(r.ex || []).map(e => `<div class="ex" style="margin-top:6px"><div class="en">${esc(e.en)}</div><div class="zh">${esc(e.zh)}</div></div>`).join("")}</div>`;
 }
-function openWord(aid, si, ti, el) {
-  const a = AMAP[aid], tok = a.sents[si].toks[ti], key = tok[1]; if (!key) return;
+function openWord(aid, si, ti, el, m) {
+  const s = getS(aid, si, m), tok = s.toks[ti], key = tok[1]; if (!key) return;
   $$(".w.act").forEach(x => x.classList.remove("act")); if (el) el.classList.add("act");
-  if (!key.startsWith("~")) recordWord(key, aid, si);
-  sheet(`<div class="t"><b>单词详解</b></div>`, wordInfoHTML(key, aid, si, ti), { kind: "float", anchor: el });
-  say(LEX[key] ? LEX[key].w : tok[0], S.set.voice, true);
+  if (!key.startsWith("~")) recordWord(key, aid, si, m);
+  sheet(`<div class="t"><b>单词详解</b></div>`, wordInfoHTML(key, aid, si, ti, m), { kind: "float", anchor: el });
+  say(lx(key) ? lx(key).w : tok[0], S.set.voice, true);
 }
 function openWordFromMem(key) {
-  const v = VOC[key]; sheet(`<div class="t"><b>单词详解</b></div>`, wordInfoHTML(key, v ? v.a : null, v ? v.s : 0, v && AMAP[v.a] ? AMAP[v.a].sents[v.s].toks.findIndex(t => t[1] === key) : null), { kind: "float" });
+  const v = VOC[key]; const s = vSent(v); sheet(`<div class="t"><b>单词详解</b></div>`, wordInfoHTML(key, v ? v.a : null, v ? v.s : 0, s ? s.toks.findIndex(t => t[1] === key) : null, v && v.m), { kind: "float" });
 }
-function sentHTML(aid, si) {
-  const a = AMAP[aid], s = a.sents[si], an = s.an;
+function sentHTML(aid, si, m) {
+  const a = AMAP[aid], s = getS(aid, si, m), an = s && s.an;
+  if (!an) return `<div class="ansent">${esc(s ? s.en : "")}</div><p class="muted">分析组件加载中，请稍后再打开。</p>`;
+  const T = m === "t" ? TR[aid] : null;
   const roles = an.role; const inCl = new Array(s.toks.length).fill(false);
   an.clauses.forEach(c => { for (let i = c.a; i <= c.b; i++) inCl[i] = true; });
   const toks = s.toks.map((t, i) => { const r = roles[i] || "-"; return `<span class="t ${r !== "-" ? r : ""} ${inCl[i] ? "cl" : ""}">${esc(t[0])}</span>${t[2]}`; }).join("");
@@ -603,54 +632,56 @@ function sentHTML(aid, si) {
   const odName = d => ({ dobj: "宾语", attr: "表语", acomp: "表语", oprd: "宾补", dative: "间接宾语", ccomp: "宾语从句", xcomp: "补足语" }[d] || "宾语/表语");
   const verbs = an.verbs.map(v => `<tr><td style="font-family:var(--read)"><b>${esc(v.form)}</b></td><td>${esc(v.role)}</td><td>${esc(v.tense)}</td><td>${esc(v.voice)}</td></tr>`).join("");
   const nf = an.nf.map(n => `<tr><td style="font-family:var(--read)"><b>${esc(n.word)}</b></td><td>${esc(n.type)}</td><td>${esc(n.fn)}</td><td style="font-family:var(--read)">${esc(n.text)}</td></tr>`).join("");
-  const aiId = "s_" + aid + "_" + si;
-  return `<div class="ansent">${toks}</div>
+  const aiId = "s_" + aid + "_" + (m === "t" ? "t" : "") + si;
+  const audBtns = T ? (T.audio ? `<div class="row" style="margin-top:8px"><button class="btn sm" data-act="segplay" data-g="${si}">${I.play}原声播放这句</button><button class="btn sm ghost" data-act="loopsent" data-g="${si}">单句循环</button><button class="btn sm ghost" data-act="calib" data-g="${si}" title="音频正读到这句开头时点">这句从此刻开始</button></div>` : `<div class="row" style="margin-top:8px"><button class="btn sm ghost" data-act="audiopanel">${I.ear}导入现场原声</button></div>`) : "";
+  return `<div class="ansent">${toks}</div>${audBtns}
   <div class="legend" style="margin-top:6px"><span><i style="background:var(--s)"></i>主语</span><span><i style="background:var(--v)"></i>谓语</span><span><i style="background:var(--o)"></i>宾语/表语</span><span><i style="background:color-mix(in srgb,var(--c) 30%,transparent)"></i>从句</span></div>
   <div class="row" style="margin-top:10px"><button class="say" data-act="say" data-text="${esc(s.en)}" data-acc="us">${I.vol}美音朗读</button><button class="say" data-act="say" data-text="${esc(s.en)}" data-acc="uk">${I.vol}英音朗读</button><span class="tag">${esc(an.kind)}</span><span class="tag ${an.passive ? "r" : ""}">${an.passive ? "含被动语态" : "主动语态"}</span>${an.inv ? '<span class="tag g">倒装</span>' : ""}</div>
-  <div class="blk"><h4>翻译</h4><div style="font-size:14.5px">${esc(s.zh)}</div></div>
+  <div class="blk"><h4>${s.zhPara ? "本段译文" : "翻译"}</h4><div style="font-size:14.5px">${s.zh ? esc(s.zh) : s.zhPara ? '<span class="muted">没有导入中文讲稿。可以点「AI 深度解析」获取这句的翻译，或重新导入时一并粘贴中文讲稿。</span>' : ""}</div></div>
   <div class="blk"><h4>句子主干</h4><dl class="skel"><dt style="color:var(--s)">主语</dt><dd>${esc(sk.S) || "—"}</dd><dt style="color:var(--v)">谓语</dt><dd>${esc(sk.V) || "—"}</dd>${sk.O ? `<dt style="color:var(--o)">${odName(sk.Od[0])}</dt><dd>${esc(sk.O)}</dd>` : ""}</dl></div>
   ${an.clauses.length ? `<div class="blk"><h4>从句与分句</h4>${an.clauses.map(c => `<div class="ex"><span class="tag" style="background:color-mix(in srgb,var(--c) 16%,transparent);color:var(--c)">${esc(c.type)}</span> <span class="en">${esc(c.text)}</span>${c.detail ? `<div class="zh">${esc(c.detail)}</div>` : ""}</div>`).join("")}</div>` : ""}
   ${verbs ? `<div class="blk"><h4>谓语动词：时态与语态</h4><div class="tblwrap"><table class="tbl"><tr><th>动词</th><th>位置</th><th>时态</th><th>语态</th></tr>${verbs}</table></div></div>` : ""}
   ${nf ? `<div class="blk"><h4>非谓语形式（分词 / 动名词 / 不定式）</h4><div class="tblwrap"><table class="tbl"><tr><th>词</th><th>形式</th><th>作用</th><th>短语</th></tr>${nf}</table></div></div>` : ""}
   ${an.notes.length ? `<div class="blk"><h4>特殊用法</h4>${an.notes.map(n => `<div class="note">${esc(n)}</div>`).join("")}</div>` : ""}
-  ${AIC[aiId] ? aiSentHTML(AIC[aiId]) : Cloud.sample ? `<button class="btn sm ghost" style="margin-top:12px" data-act="aisent" data-a="${aid}" data-s="${si}">${I.spark}AI 深度解析</button><div id="ais"></div>` : PWA ? `<button class="btn sm ghost" style="margin-top:12px" data-act="go" data-v="prefs" data-a="s-ai">${I.spark}开启 AI 深度解析（需在设置中填写密钥）</button>` : ""}
-  <p class="faint" style="font-size:11.5px;margin-top:12px">句法成分由依存句法分析自动标注，复杂句可能有个别偏差，可结合翻译与特殊用法理解。</p>`;
+  ${AIC[aiId] ? aiSentHTML(AIC[aiId]) : Cloud.sample ? `<button class="btn sm ghost" style="margin-top:12px" data-act="aisent" data-a="${aid}" data-s="${si}" data-m="${m || ""}">${I.spark}AI 深度解析</button><div id="ais"></div>` : PWA ? `<button class="btn sm ghost" style="margin-top:12px" data-act="go" data-v="prefs" data-a="s-ai">${I.spark}开启 AI 深度解析（需在设置中填写密钥）</button>` : ""}
+  <p class="faint" style="font-size:11.5px;margin-top:12px">${an.auto ? "句法成分由本机的浏览器端分析器自动标注，长难句可能有偏差；需要更准确的讲解可用 AI 深度解析。" : "句法成分由依存句法分析自动标注，复杂句可能有个别偏差，可结合翻译与特殊用法理解。"}</p>`;
 }
 function aiSentHTML(r) {
   if (!r) return "";
-  return `<div class="ai"><b>AI 深度解析</b>${r.structure ? `<div style="margin-top:4px">${esc(r.structure)}</div>` : ""}${(r.grammar || []).length ? `<ul>${r.grammar.map(g => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}${(r.special || []).length ? `<div>特殊用法：</div><ul>${r.special.map(g => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}${r.tip ? `<div class="faint">${esc(r.tip)}</div>` : ""}</div>`;
+  return `<div class="ai"><b>AI 深度解析</b>${r.translation ? `<div style="margin-top:4px">译文：${esc(r.translation)}</div>` : ""}${r.structure ? `<div style="margin-top:4px">${esc(r.structure)}</div>` : ""}${(r.grammar || []).length ? `<ul>${r.grammar.map(g => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}${(r.special || []).length ? `<div>特殊用法：</div><ul>${r.special.map(g => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}${r.tip ? `<div class="faint">${esc(r.tip)}</div>` : ""}</div>`;
 }
-function openSent(aid, si) {
+async function openSent(aid, si, m) {
+  if (m === "t") { try { await ensureFull(); } catch (e) {} }
   $$(".sent.picked").forEach(x => x.classList.remove("picked"));
-  const el = $(`.sent[data-s="${si}"]`); if (el) el.classList.add("picked");
-  recordSent(aid, si);
-  sheet(`<div class="t"><b>整句解析</b><div class="faint" style="font-size:12px">${esc(AMAP[aid].titleZh)} · 第 ${si + 1} 句</div></div>`, sentHTML(aid, si), { kind: "drawer" });
+  const el = $(`.sent[data-s="${si}"]${m === "t" ? '[data-m="t"]' : ':not([data-m])'}`); if (el) el.classList.add("picked");
+  recordSent(aid, si, m);
+  sheet(`<div class="t"><b>整句解析</b><div class="faint" style="font-size:12px">${esc(AMAP[aid].titleZh)} · ${m === "t" ? "全文" : "导读"}第 ${si + 1} 句</div></div>`, sentHTML(aid, si, m), { kind: "drawer" });
 }
-async function aiWord(key, aid, si) {
+async function aiWord(key, aid, si, m) {
   const box = $("#aiw"); const btn = $("[data-act=aiword]"); if (btn) btn.disabled = true; if (box) box.innerHTML = '<div class="ai muted">正在生成…</div>';
-  const s = AMAP[aid].sents[si]; const L = LEX[key] || { w: key };
+  const s = getS(aid, si, m); const L = lx(key) || { w: key };
   try {
-    const r = await Cloud.sample.json(`你是资深英语老师。学习者在下面这句英文中点击了单词 "${L.w}"。请严格输出 JSON（不要其他文字）：{"ctx":"该词在本句语境中的具体含义（中文，一句话）","use":"常见用法说明（中文，2-3 个要点合成一段）","coll":["常用搭配1","常用搭配2","常用搭配3"],"ex":[{"en":"自然的英文例句","zh":"中文翻译"},{"en":"","zh":""}]}\n句子：${s.en}\n参考译文：${s.zh}`, { modelTier: "quick" });
-    const id = "w_" + safeId(key) + "_" + aid.slice(0, 6) + si; AIC[id] = r; putAI(id);
+    const r = await Cloud.sample.json(`你是资深英语老师。学习者在下面这句英文中点击了单词 "${L.w}"。请严格输出 JSON（不要其他文字）：{"ctx":"该词在本句语境中的具体含义（中文，一句话）","use":"常见用法说明（中文，2-3 个要点合成一段）","coll":["常用搭配1","常用搭配2","常用搭配3"],"ex":[{"en":"自然的英文例句","zh":"中文翻译"},{"en":"","zh":""}]}\n句子：${s.en}\n${s.zh && !s.zhPara ? "参考译文：" + s.zh : ""}`, { modelTier: "quick" });
+    const id = "w_" + safeId(key) + "_" + aid.slice(0, 6) + (m === "t" ? "t" : "") + si; AIC[id] = r; putAI(id);
     if (box) box.innerHTML = aiWordHTML(r); if (btn) btn.remove();
   } catch (e) { if (box) box.innerHTML = `<div class="ai muted">${esc(aiErr(e))}</div>`; if (btn) btn.disabled = false; }
 }
-async function aiSent(aid, si) {
+async function aiSent(aid, si, m) {
   const box = $("#ais"); const btn = $("[data-act=aisent]"); if (btn) btn.disabled = true; if (box) box.innerHTML = '<div class="ai muted">正在解析…</div>';
-  const s = AMAP[aid].sents[si];
+  const s = getS(aid, si, m);
   try {
-    const r = await Cloud.sample.json(`你是资深英语语法老师。请深度解析下面的英文句子，严格输出 JSON（不要其他文字）：{"structure":"句子结构与成分划分（中文，说明主干与修饰关系）","grammar":["语法要点（时态、语态、从句、非谓语等），每条一句"],"special":["习语、固定搭配、修辞或特殊用法，每条一句"],"tip":"一句学习提示"}\n句子：${s.en}\n参考译文：${s.zh}`, { modelTier: "default" });
-    const id = "s_" + aid + "_" + si; AIC[id] = r; putAI(id);
+    const r = await Cloud.sample.json(`你是资深英语语法老师。请深度解析下面的英文句子，严格输出 JSON（不要其他文字）：{"translation":"这句话的准确中文翻译","structure":"句子结构与成分划分（中文，说明主干与修饰关系）","grammar":["语法要点（时态、语态、从句、非谓语等），每条一句"],"special":["习语、固定搭配、修辞或特殊用法，每条一句"],"tip":"一句学习提示"}\n句子：${s.en}\n${s.zh && !s.zhPara ? "参考译文：" + s.zh : s.zh ? "所在段落译文（仅供参考）：" + s.zh : ""}`, { modelTier: "default" });
+    const id = "s_" + aid + "_" + (m === "t" ? "t" : "") + si; AIC[id] = r; putAI(id);
     if (box) box.innerHTML = aiSentHTML(r); if (btn) btn.remove();
   } catch (e) { if (box) box.innerHTML = `<div class="ai muted">${esc(aiErr(e))}</div>`; if (btn) btn.disabled = false; }
 }
 
 /* ---------- finish quiz ---------- */
-function finishQuiz() {
+async function finishQuiz() {
   const a = AMAP[READ_ID];
   const qs = a.quiz.map(q => ({ type: "comp", q: q.q, o: q.o, a: q.a, art: a.id }));
-  const keys = shuffle(Object.keys(a.keys).filter(k => a.sents.some(s => s.toks.some(t => t[1] === k)))).slice(0, 2);
-  keys.forEach(k => qs.push(mkCloze(a, k)));
+  if (hasTR(a.id)) { try { await ensureFull(); } catch (e) {} for (let i = 0; i < 4; i++) qs.push(mkClozeT(a.id)); }
+  else { const keys = shuffle(Object.keys(a.keys).filter(k => a.sents.some(s => s.toks.some(t => t[1] === k)))).slice(0, 2); keys.forEach(k => qs.push(mkCloze(a, k))); }
   runQuiz({ title: "完成测验 · " + a.titleZh, qs: qs.filter(Boolean), onDone: (sc, tot) => {
     if (sc >= Math.ceil(tot * 0.6)) { closeModal(true); complete(a.id, sc, tot); render(); return false; }
     return "答对 " + sc + "/" + tot + "，需答对 " + Math.ceil(tot * 0.6) + " 题才算完成。看看解析，回顾原文后再试一次";
@@ -658,28 +689,46 @@ function finishQuiz() {
 }
 
 /* ---------- exam generation ---------- */
-const firstTr = k => { const L = LEX[k]; if (!L || !L.tr.length) return null; return L.tr[0].replace(/^\[[^\]]+\]\s*/, "").slice(0, 40); };
-const posOf = k => { const L = LEX[k]; const m = L && L.tr[0] && L.tr[0].match(/^([a-z]+)\./); return m ? m[1] : ""; };
+const firstTr = k => { const L = lx(k); if (!L || !L.tr.length) return null; return L.tr[0].replace(/^\[[^\]]+\]\s*/, "").slice(0, 40); };
+const posOf = k => { const L = lx(k); const m = L && L.tr[0] && L.tr[0].match(/^([a-z]+)\./); return m ? m[1] : ""; };
 function distract(k, n, f) {
   const pos = posOf(k); const pool = shuffle(Object.keys(OCC)).filter(x => x !== k && firstTr(x) && x.length > 3 && (!pos || posOf(x) === pos));
   const out = []; const seen = new Set([f(k)]);
   for (const x of pool) { const v = f(x); if (v && !seen.has(v)) { seen.add(v); out.push(v); } if (out.length >= n) break; }
   return out;
 }
-function mkMeaning(k) { const L = LEX[k]; const ans = firstTr(k); if (!ans) return null; const o = shuffle([ans].concat(distract(k, 3, firstTr))); return { type: "mean", q: `单词 “${L.w}” 的意思是？`, o, a: o.indexOf(ans), exp: `${L.w} /${L.ph}/：${L.tr.slice(0, 2).join("；")}`, k }; }
-function mkWord(k) { const L = LEX[k]; const tr = firstTr(k); if (!tr) return null; const o = shuffle([L.w].concat(distract(k, 3, x => LEX[x].w))); return { type: "word", q: `哪个单词的意思是 “${tr}”？`, o, a: o.indexOf(L.w), exp: `${L.w}：${L.tr.slice(0, 2).join("；")}`, k }; }
-function mkSpell(k) { const L = LEX[k]; const tr = firstTr(k); if (!tr || L.w.length < 4 || /[^a-z]/i.test(L.w)) return null; return { type: "spell", q: `拼写单词：${tr}（首字母 ${L.w[0]}，共 ${L.w.length} 个字母）`, ans: L.w.toLowerCase(), exp: `${L.w} /${L.ph}/`, k }; }
+function mkMeaning(k) { const L = lx(k); const ans = firstTr(k); if (!ans) return null; const o = shuffle([ans].concat(distract(k, 3, firstTr))); return { type: "mean", q: `单词 “${L.w}” 的意思是？`, o, a: o.indexOf(ans), exp: `${L.w} /${L.ph}/：${L.tr.slice(0, 2).join("；")}`, k }; }
+function mkWord(k) { const L = lx(k); const tr = firstTr(k); if (!tr) return null; const o = shuffle([L.w].concat(distract(k, 3, x => lx(x).w))); return { type: "word", q: `哪个单词的意思是 “${tr}”？`, o, a: o.indexOf(L.w), exp: `${L.w}：${L.tr.slice(0, 2).join("；")}`, k }; }
+function mkSpell(k) { const L = lx(k); const tr = firstTr(k); if (!tr || L.w.length < 4 || /[^a-z]/i.test(L.w)) return null; return { type: "spell", q: `拼写单词：${tr}（首字母 ${L.w[0]}，共 ${L.w.length} 个字母）`, ans: L.w.toLowerCase(), exp: `${L.w} /${L.ph}/`, k }; }
 function findSentWith(k, prefer) {
   const occ = OCC[k] || []; if (!occ.length) return null;
   const o = (prefer && occ.find(([ai]) => ARTS[ai].id === prefer)) || pick(occ); return [ARTS[o[0]], o[1]];
 }
 function mkCloze(a, k, si) {
   if (si == null) { const f = a.sents.findIndex(s => s.toks.some(t => t[1] === k)); if (f < 0) { const r = findSentWith(k); if (!r) return null; a = r[0]; si = r[1]; } else si = f; }
-  const s = a.sents[si]; const ti = s.toks.findIndex(t => t[1] === k); if (ti < 0) return null;
+  return mkClozeS(a.sents[si], k, a.sents);
+}
+function mkClozeS(s, k, poolSents, exp) {
+  if (!s || !s.toks) return null;
+  const ti = s.toks.findIndex(t => t[1] === k); if (ti < 0) return null;
   const surf = s.toks[ti][0]; const text = s.toks.map((t, i) => (i === ti ? "_____" : t[0]) + t[2]).join("");
-  const pos = s.toks[ti][3]; const pool = shuffle(a.sents.flatMap(x => x.toks).filter(t => t[1] && t[3] === pos && t[0].toLowerCase() !== surf.toLowerCase() && t[0].length > 3).map(t => t[0]));
+  const pos = s.toks[ti][3]; const pool = shuffle(poolSents.flatMap(x => x.toks || []).filter(t => t[1] && !t[1].startsWith("~") && t[3] === pos && t[0].toLowerCase() !== surf.toLowerCase() && t[0].length > 3).map(t => t[0]));
   const o = shuffle([surf].concat([...new Set(pool)].slice(0, 3))); if (o.length < 3) return null;
-  return { type: "cloze", q: "选词填空", sub: text, o, a: o.indexOf(surf), exp: s.zh, k };
+  return { type: "cloze", q: "选词填空", sub: text, o, a: o.indexOf(surf), exp: exp != null ? exp : (s.zhPara ? "" : s.zh), k };
+}
+/* cloze from the imported full transcript: prefers exam-tagged words in sentences already read */
+function mkClozeT(aid, k0) {
+  const X = TX(aid); if (!X || !window.nlp) return null;
+  const read = [...tprog(aid)]; const pool = read.length > 8 ? read : X.flat.map((_, i) => i);
+  for (let tries = 0; tries < 8; tries++) {
+    const g = pick(pool), s = getS(aid, g, "t"); if (!s) continue;
+    const m = X.mods[X.modOf[g]]; const near = []; for (let x = Math.max(m.gs, g - 8); x <= Math.min(m.ge, g + 8); x++) near.push(getS(aid, x, "t"));
+    let k = k0;
+    if (!k) { const cands = s.toks.filter(t => t[1] && !t[1].startsWith("~") && t[0].length > 4 && (lx(t[1]) || {}).tags && lx(t[1]).tags.some(x => /CET6|考研|雅思|托福|GRE/.test(x))); if (!cands.length) continue; k = pick(cands)[1]; }
+    const q = mkClozeS(s, k, near, "出自演讲全文第 " + (X.modOf[g] + 1) + " 部分" + (s.zh ? "；本段译文：" + s.zh.slice(0, 80) + (s.zh.length > 80 ? "…" : "") : ""));
+    if (q) { q.sub = q.sub; q.q = "选词填空（演讲原文）"; return q; }
+  }
+  return null;
 }
 function mkTrans(a, si) { const s = a.sents[si]; const others = shuffle(ARTS.flatMap(x => x.sents).filter(x => x !== s && Math.abs(x.zh.length - s.zh.length) < 25)).slice(0, 3).map(x => x.zh); const o = shuffle([s.zh].concat(others)); return { type: "trans", q: "选出这句话的正确翻译", sub: s.en, o, a: o.indexOf(s.zh), exp: "" }; }
 function mkGrammar(a, si) {
@@ -691,20 +740,24 @@ function mkGrammar(a, si) {
 function genExam(scope) {
   const curA = S.cur.art ? AMAP[S.cur.art] : ARTS[0];
   const arts = scope === "final" ? ARTS : [...new Set([curA].concat(S.done.slice(-3).map(d => AMAP[d.a])))];
-  const learned = Object.values(VOC).filter(v => LEX[v.k]).sort((x, y) => y.l - x.l).map(v => v.k);
-  const keyW = arts.flatMap(a => Object.keys(a.keys).filter(k => LEX[k] && OCC[k]));
+  const learned = Object.values(VOC).filter(v => lx(v.k)).sort((x, y) => y.l - x.l).map(v => v.k);
+  const keyW = arts.flatMap(a => Object.keys(a.keys).filter(k => lx(k) && OCC[k]));
   const wpool = shuffle([...new Set(learned.slice(0, 40).concat(keyW))]);
   const spool = shuffle(Object.values(SEN).filter(x => AMAP[x.a]).map(x => [AMAP[x.a], x.s]).concat(arts.flatMap(a => a.sents.map((_, i) => [a, i]))));
   const qs = []; const total = scope === "final" ? 20 : 10; let wi = 0, si = 0;
   const nextW = () => wpool[wi++ % Math.max(1, wpool.length)];
-  const plan = scope === "final" ? ["mean", "word", "spell", "cloze", "cloze", "trans", "comp", "comp", "comp", "gram", "mean", "word", "cloze", "trans", "comp", "comp", "gram", "spell", "mean", "comp"] : ["mean", "word", "mean", "spell", "cloze", "cloze", "trans", "gram", "comp", "comp"];
+  const anyT = arts.some(a => hasTR(a.id)) && !!window.nlp;
+  let plan = scope === "final" ? ["mean", "word", "spell", "cloze", "cloze", "trans", "comp", "comp", "comp", "gram", "mean", "word", "cloze", "trans", "comp", "comp", "gram", "spell", "mean", "comp"] : ["mean", "word", "mean", "spell", "cloze", "cloze", "trans", "gram", "comp", "comp"];
+  if (anyT) plan = scope === "final" ? plan.map((x, i) => [5, 9, 13, 16].includes(i) ? "tclz" : x) : ["mean", "word", "mean", "spell", "cloze", "tclz", "tclz", "tclz", "gram", "comp"];
   const compPool = shuffle(arts.flatMap(a => a.quiz.map(q => ({ type: "comp", q: q.q, o: q.o, a: q.a, art: a.id }))));
   let ci = 0, guard = 0;
   for (const t of plan) {
     let q = null; guard = 0;
     while (!q && guard++ < 12) {
+      if (t === "tclz" && guard > 4) { q = mkMeaning(nextW()); if (q) break; }
       if (t === "mean") q = mkMeaning(nextW()); else if (t === "word") q = mkWord(nextW()); else if (t === "spell") q = mkSpell(nextW());
-      else if (t === "cloze") { const k = nextW(); const r = findSentWith(k, curA.id); q = r ? mkCloze(r[0], k, r[1]) : null; }
+      else if (t === "cloze") { const k = nextW(); const v = VOC[k]; if (v && v.m === "t" && hasTR(v.a) && window.nlp) { const X = TX(v.a); q = mkClozeS(getS(v.a, v.s, "t"), k, [getS(v.a, Math.max(0, v.s - 1), "t"), getS(v.a, Math.min(X.flat.length - 1, v.s + 1), "t")].filter(Boolean).concat(X.flat.slice(0, 40).map((_, i) => getS(v.a, i, "t")))); } else { const r = findSentWith(k, curA.id); q = r ? mkCloze(r[0], k, r[1]) : null; } }
+      else if (t === "tclz") { const ids = arts.map(a => a.id).filter(hasTR); q = ids.length && window.nlp ? mkClozeT(pick(ids)) : null; }
       else if (t === "trans") { const [a, i] = spool[si++ % spool.length]; q = mkTrans(a, i); }
       else if (t === "gram") { const [a, i] = spool[si++ % spool.length]; q = mkGrammar(a, i); }
       else if (t === "comp") { q = compPool[ci++] || null; if (q) q.sub = "《" + AMAP[q.art].titleZh + "》"; }
@@ -741,7 +794,8 @@ function submitQuiz() {
   if (q.onDone) { const r = q.onDone(sc, q.qs.length); if (r === false) redraw = false; else if (r) q.resultText = r; }
   if (redraw) drawQuiz();
 }
-function startExam(kind, n) {
+async function startExam(kind, n) {
+  if (FULL && Object.keys(TR).length) { try { await ensureFull(); } catch (e) {} }
   const qs = genExam(kind === "final" ? "final" : "week");
   const title = kind === "final" ? "终极考试" : kind === "prac" ? "随时练习" : `本周第 ${n} 次考试`;
   runQuiz({ title, qs, onDone: (sc, tot) => {
@@ -784,29 +838,29 @@ function vExam() {
 }
 
 /* ---------- views: memory ---------- */
-function dueCards() { const t = todayK(); return Object.values(VOC).filter(v => LEX[v.k] && (!v.due || v.due <= t)); }
+function dueCards() { const t = todayK(); return Object.values(VOC).filter(v => lx(v.k) && (!v.due || v.due <= t)); }
 let MEMSORT = "recent";
 function vMem() {
-  const vs = Object.values(VOC).filter(v => LEX[v.k]);
+  const vs = Object.values(VOC).filter(v => lx(v.k));
   vs.sort(MEMSORT === "az" ? (a, b) => a.k.localeCompare(b.k) : MEMSORT === "freq" ? (a, b) => b.n - a.n : (a, b) => b.l - a.l);
-  const ss = Object.entries(SEN).filter(([, v]) => AMAP[v.a]).sort((a, b) => b[1].l - a[1].l);
+  const ss = Object.entries(SEN).filter(([, v]) => AMAP[v.a] && (v.m !== "t" || hasTR(v.a))).sort((a, b) => b[1].l - a[1].l);
   const due = dueCards().length;
   return `<div class="sechead"><h2><span class="no">4</span>记忆库</h2><span class="muted">单词 ${vs.length} · 句子 ${ss.length}</span></div>
   <div class="panel row" style="justify-content:space-between" id="s-flash"><div><b>今日待复习 ${due} 个</b><div class="muted" style="font-size:12.5px">间隔复习：认识的词会在 1、2、4、7、15 天后再出现</div></div><button class="btn" data-act="flash" ${due ? "" : "disabled"}>开始强化复习</button></div>
   <div id="flashbox"></div>
   <div class="sec" id="s-words"><div class="sechead"><h2><span class="no">4.1</span>单词</h2><div class="seg"><button class="${MEMSORT === "recent" ? "on" : ""}" data-act="msort" data-m="recent">最近</button><button class="${MEMSORT === "freq" ? "on" : ""}" data-act="msort" data-m="freq">次数</button><button class="${MEMSORT === "az" ? "on" : ""}" data-act="msort" data-m="az">A–Z</button></div></div>
-  ${vs.length ? `<div class="wlist">${vs.map(v => { const L = LEX[v.k]; return `<button class="witem" data-act="memword" data-k="${esc(v.k)}"><span class="top"><b>${esc(L.w)}</b><span class="faint" style="font-size:12px">/${esc(L.ph)}/</span></span><span class="m">${esc((L.tr[0] || "").slice(0, 34))}</span><span class="f">${esc(AMAP[v.a] ? AMAP[v.a].titleZh : "")} · 点击 ${v.n} 次 · 熟练度 ${v.box || 0}/5</span></button>`; }).join("")}</div>` : '<div class="empty">阅读时点击不认识的单词，它们会自动收进这里。</div>'}</div>
+  ${vs.length ? `<div class="wlist">${vs.map(v => { const L = lx(v.k); return `<button class="witem" data-act="memword" data-k="${esc(v.k)}"><span class="top"><b>${esc(L.w)}</b><span class="faint" style="font-size:12px">/${esc(L.ph)}/</span></span><span class="m">${esc((L.tr[0] || "").slice(0, 34))}</span><span class="f">${esc(AMAP[v.a] ? AMAP[v.a].titleZh : "")} · 点击 ${v.n} 次 · 熟练度 ${v.box || 0}/5</span></button>`; }).join("")}</div>` : '<div class="empty">阅读时点击不认识的单词，它们会自动收进这里。</div>'}</div>
   <div class="sec" id="s-sents"><div class="sechead"><h2><span class="no">4.2</span>句子</h2></div>
-  ${ss.length ? `<div class="slist">${ss.map(([id, v]) => { const s = AMAP[v.a].sents[v.s]; return `<button class="sitem" data-act="memsent" data-a="${v.a}" data-s="${v.s}">${esc(s.en)}<div class="zh">${esc(s.zh)}</div></button>`; }).join("")}</div>` : '<div class="empty">双击或长按句子中的单词，句子解析会保存在这里。</div>'}</div>`;
+  ${ss.length ? `<div class="slist">${ss.map(([id, v]) => { const s = getS(v.a, v.s, v.m); if (!s) return ""; return `<button class="sitem" data-act="memsent" data-a="${v.a}" data-s="${v.s}" data-m="${v.m || ""}">${esc(s.en)}${s.zh && !s.zhPara ? `<div class="zh">${esc(s.zh)}</div>` : `<div class="zh">${esc(AMAP[v.a].titleZh)} · 演讲全文</div>`}</button>`; }).join("")}</div>` : '<div class="empty">双击或长按句子中的单词，句子解析会保存在这里。</div>'}</div>`;
 }
 let FL = null;
 function startFlash() { const d = shuffle(dueCards()); if (!d.length) { toast("今天没有待复习的单词"); return; } FL = { list: d, i: 0, flip: false }; drawFlash(); }
 function drawFlash() {
   const box = $("#flashbox"); if (!box || !FL) return;
   if (FL.i >= FL.list.length) { box.innerHTML = `<div class="panel" style="margin-top:12px;text-align:center"><b>本轮复习完成</b><p class="muted">复习了 ${FL.list.length} 个单词。</p></div>`; FL = null; renderChrome(); return; }
-  const v = FL.list[FL.i], L = LEX[v.k], a = AMAP[v.a], s = a ? a.sents[v.s] : null;
+  const v = FL.list[FL.i], L = lx(v.k), a = AMAP[v.a], s = a ? vSent(v) : null;
   box.innerHTML = `<div class="flash" style="margin-top:12px"><div class="faint num" style="text-align:center;font-size:12px;margin-bottom:6px">${FL.i + 1} / ${FL.list.length}</div>
-  <div class="fcard" data-act="flip">${FL.flip ? `<div class="wd">${esc(L.w)}</div><div class="ph">/${esc(L.ph)}/</div><div>${L.tr.slice(0, 3).map(esc).join("<br>")}</div>${s ? `<div class="ex" style="text-align:left;margin-top:6px"><div class="en">${esc(s.en)}</div><div class="zh">${esc(s.zh)}</div></div>` : ""}` : `<div class="wd">${esc(L.w)}</div><button class="say" data-act="say" data-text="${esc(L.w)}">${I.vol}发音</button><div class="faint">点击卡片查看释义</div>`}</div>
+  <div class="fcard" data-act="flip">${FL.flip ? `<div class="wd">${esc(L.w)}</div><div class="ph">/${esc(L.ph)}/</div><div>${L.tr.slice(0, 3).map(esc).join("<br>")}</div>${s ? `<div class="ex" style="text-align:left;margin-top:6px"><div class="en">${esc(s.en)}</div>${s.zh && !s.zhPara ? `<div class="zh">${esc(s.zh)}</div>` : ""}</div>` : ""}` : `<div class="wd">${esc(L.w)}</div><button class="say" data-act="say" data-text="${esc(L.w)}">${I.vol}发音</button><div class="faint">点击卡片查看释义</div>`}</div>
   ${FL.flip ? `<div class="fbtns"><button class="btn warn" data-act="fl" data-r="0">不认识</button><button class="btn ghost" data-act="fl" data-r="1">模糊</button><button class="btn" data-act="fl" data-r="2">认识</button></div>` : ""}</div>`;
 }
 function rateFlash(r) {
@@ -833,35 +887,49 @@ function vReward() {
 }
 
 /* ---------- views: practice (listening & speaking) ---------- */
-let PR_ID = null, PR_SI = 0;
+let PR_ID = null, PR_SI = 0, PR_SRC = null;
+function prList() { if (PR_SRC === "t" && hasTR(PR_ID)) return TX(PR_ID).flat.map(f => f.en); return AMAP[PR_ID].sents.map(s => s.en); }
 function vPractice() {
   if (!PR_ID) PR_ID = S.cur.art || ARTS[0].id;
-  const a = AMAP[PR_ID];
-  return `<div class="sechead"><h2><span class="no">6</span>听说练习</h2><select id="prsel" data-act="prsel" style="max-width:60%;height:34px;border-radius:10px;border:1px solid var(--line);background:var(--card);padding:0 8px">${ARTS.map(x => `<option value="${x.id}" ${x.id === PR_ID ? "selected" : ""}>${esc(x.titleZh)}</option>`).join("")}</select></div>
+  if (PR_SRC == null || (PR_SRC === "t" && !hasTR(PR_ID))) PR_SRC = hasTR(PR_ID) ? "t" : "i";
+  const a = AMAP[PR_ID], L = prList(), T = PR_SRC === "t" ? TR[PR_ID] : null, live = !!(T && T.audio);
+  if (PR_SI >= L.length) PR_SI = 0;
+  const X = T ? TX(PR_ID) : null;
+  return `<div class="sechead"><h2><span class="no">6</span>听说练习</h2><select id="prsel" data-act="prsel" style="max-width:60%;height:34px;border-radius:10px;border:1px solid var(--line);background:var(--card);padding:0 8px">${ARTS.map(x => `<option value="${x.id}" ${x.id === PR_ID ? "selected" : ""}>${esc(x.titleZh)}${hasTR(x.id) ? " · 全文" : ""}</option>`).join("")}</select></div>
+  ${hasTR(PR_ID) ? `<div class="seg" style="margin-bottom:10px"><button data-act="prsrc" data-x="t" class="${PR_SRC === "t" ? "on" : ""}">演讲全文</button><button data-act="prsrc" data-x="i" class="${PR_SRC === "i" ? "on" : ""}">导读短文</button></div>` : FULL ? `<div class="fullcta" style="margin-bottom:10px"><div class="muted" style="font-size:13px">导入这场演讲的全文和现场音频后，这里可以逐句跟听现场原声。</div><button class="btn sm" data-act="import" data-id="${PR_ID}">导入全文</button></div>` : ""}
   <div class="grid2">
-  <div class="panel player" id="s-listen"><h3>6.1 听力通读</h3>
-    <div class="pctrl"><button class="pbig" data-act="pplay" id="pplay" title="播放/暂停">${I.play}</button><button class="iconbtn" data-act="pstop" title="停止">${I.stop}</button>
+  <div class="panel player" id="s-listen"><h3>6.1 听力通读${live ? "（现场原声）" : ""}</h3>
+    ${live ? `<div class="pctrl"><button class="pbig" data-act="pplay" id="pplay" title="播放/暂停">${AUD.el && !AUD.el.paused && AUD.aid === PR_ID ? I.pause : I.play}</button><span class="muted" style="font-size:12.5px">播放条在屏幕底部：可变速、单句循环、前后跳 5 秒</span></div>` :
+    `<div class="pctrl"><button class="pbig" data-act="pplay" id="pplay" title="播放/暂停">${I.play}</button><button class="iconbtn" data-act="pstop" title="停止">${I.stop}</button>
       <div class="seg"><button data-act="acc" data-a="us" class="${S.set.voice === "us" ? "on" : ""}">美式</button><button data-act="acc" data-a="uk" class="${S.set.voice === "uk" ? "on" : ""}">英式</button></div>
       <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:6px">语速 <input type="range" id="rate" min="0.6" max="1.3" step="0.05" value="${S.set.rate}" style="width:100px"> <span class="num" id="ratev">${S.set.rate.toFixed(2)}</span></label></div>
-    <div class="faint" style="font-size:12px" id="vname"></div>
-    <div class="plist" id="plist">${a.sents.map((s, i) => `<button class="pl" data-act="pfrom" data-i="${i}">${esc(s.en)}</button>`).join("")}</div>
-    <div class="faint" style="font-size:11.5px">点击任意句子从该句开始播放。朗读使用设备内置语音，不同设备音色不同。</div>
+    <div class="faint" style="font-size:12px" id="vname"></div>`}
+    ${T && !live ? `<div class="note" style="margin:0">还没有导入现场音频，现在用设备语音朗读。<button class="linkbtn" data-act="audiopanel">导入现场原声</button></div>` : ""}
+    <div class="plist" id="plist">${L.map((s, i) => `${X && X.pStart.includes(i) && T.paras[X.flat[i].p].t != null ? `<div class="plstamp num">${fmtT(T.paras[X.flat[i].p].t)}</div>` : ""}<button class="pl" data-act="pfrom" data-i="${i}" data-g="${i}">${esc(s)}</button>`).join("")}</div>
+    <div class="faint" style="font-size:11.5px">点击任意句子从该句开始播放。${live ? "高亮跟随原声；对不上时可在阅读页双击句子校准。" : "朗读使用设备内置语音，不同设备音色不同。"}</div>
   </div>
   <div class="panel player" id="s-speak"><h3>6.2 口语跟读</h3>
-    <div class="row"><button class="btn sm ghost" data-act="sprev">上一句</button><span class="muted num" id="sidx">第 ${PR_SI + 1}/${a.sents.length} 句</span><button class="btn sm ghost" data-act="snext">下一句</button><div class="seg"><button data-act="sscope" data-x="s" class="on" id="scS">单句</button><button data-act="sscope" data-x="p" id="scP">整段</button></div></div>
+    <div class="row"><button class="btn sm ghost" data-act="sprev">上一句</button><span class="muted num" id="sidx">第 ${PR_SI + 1}/${L.length} 句</span><button class="btn sm ghost" data-act="snext">下一句</button><div class="seg"><button data-act="sscope" data-x="s" class="${SCOPE === "s" ? "on" : ""}" id="scS">单句</button><button data-act="sscope" data-x="p" class="${SCOPE === "p" ? "on" : ""}" id="scP">整段</button></div></div>
     <div class="ex"><div class="en" id="starget" style="font-size:16px"></div></div>
-    <div class="row"><button class="btn ghost" data-act="sorig">${I.vol}听原声</button><button class="btn" data-act="srec" id="srec">${I.mic}开始录音</button><label class="btn ghost sm" style="position:relative;overflow:hidden">上传录音<input type="file" accept="audio/*" capture id="supload" style="position:absolute;inset:0;opacity:0"></label></div>
+    <div class="row"><button class="btn ghost" data-act="sorig">${I.vol}${live ? "听现场原声" : "听原声"}</button><button class="btn" data-act="srec" id="srec">${I.mic}开始录音</button><label class="btn ghost sm" style="position:relative;overflow:hidden">上传录音<input type="file" accept="audio/*" capture id="supload" style="position:absolute;inset:0;opacity:0"></label></div>
     <canvas class="wave" id="wave" width="600" height="56"></canvas>
     <div id="sresult"></div>
   </div></div>`;
 }
 let SCOPE = "s";
-function speakTarget() { const a = AMAP[PR_ID]; if (SCOPE === "s") return a.sents[PR_SI].en; const p = a.paras.find(pi => pi.includes(PR_SI)); return p.map(i => a.sents[i].en).join(" "); }
+function spRange() {
+  const L = prList();
+  if (SCOPE === "s") return [PR_SI, PR_SI];
+  if (PR_SRC === "t" && hasTR(PR_ID)) { const X = TX(PR_ID), p = X.flat[PR_SI].p, a = X.pStart[p], b = p + 1 < X.pStart.length ? X.pStart[p + 1] - 1 : X.flat.length - 1; return [a, b]; }
+  const a = AMAP[PR_ID], p = a.paras.find(pi => pi.includes(PR_SI)); return [p[0], p[p.length - 1]];
+}
+function speakTarget() { const L = prList(), [x, y] = spRange(); return L.slice(x, y + 1).join(" "); }
 function afterPractice() {
   $("#starget").textContent = speakTarget();
-  $("#rate").addEventListener("input", e => { S.set.rate = +e.target.value; $("#ratev").textContent = S.set.rate.toFixed(2); save(); });
+  const r = $("#rate"); if (r) r.addEventListener("input", e => { S.set.rate = +e.target.value; $("#ratev").textContent = S.set.rate.toFixed(2); save(); });
   $("#supload").addEventListener("change", e => { const f = e.target.files[0]; if (f) gotRecording(f, null, 0); });
-  const v = pickVoice(S.set.voice); $("#vname").textContent = v ? "当前语音：" + v.name + "（" + v.lang + "）" : "设备语音加载中…";
+  const vn = $("#vname"); if (vn) { const v = pickVoice(S.set.voice); vn.textContent = v ? "当前语音：" + v.name + "（" + v.lang + "）" : "设备语音加载中…"; }
+  if (PR_SRC === "t" && hasTR(PR_ID) && TR[PR_ID].audio) audioLoad(PR_ID);
 }
 
 /* TTS */
@@ -884,11 +952,12 @@ function say(text, acc, quiet, onend, onstart) {
 }
 let PLAY = null;
 function playFrom(i) {
-  const a = AMAP[PR_ID]; PLAY = { i, on: true };
+  if (PR_SRC === "t" && hasTR(PR_ID) && TR[PR_ID].audio) { playAt(PR_ID, i); return; }
+  const L = prList(); PLAY = { i, on: true };
   $("#pplay").innerHTML = I.pause; const step = () => {
-    if (!PLAY || !PLAY.on) return; if (PLAY.i >= a.sents.length) { stopSpeak(); S.stats.listen++; save(); checkBadges(); toast("全文播放完毕"); return; }
+    if (!PLAY || !PLAY.on) return; if (PLAY.i >= L.length) { stopSpeak(); S.stats.listen++; save(); checkBadges(); toast("全文播放完毕"); return; }
     $$(".pl").forEach((b, j) => b.classList.toggle("on", j === PLAY.i)); const cur = $$(".pl")[PLAY.i]; if (cur) cur.scrollIntoView({ block: "nearest" });
-    say(a.sents[PLAY.i].en, S.set.voice, false, err => { if (!PLAY || !PLAY.on) return; if (err === true && !PLAY.on) return; PLAY.i++; setTimeout(step, 120); });
+    say(L[PLAY.i], S.set.voice, false, err => { if (!PLAY || !PLAY.on) return; if (err === true && !PLAY.on) return; PLAY.i++; setTimeout(step, 120); });
   };
   markStudy(); step();
 }
@@ -896,6 +965,7 @@ function stopSpeak(silent) { if (PLAY) PLAY.on = false; PLAY = null; try { speec
 function listenArticle(id) {
   if (VIEW === "read") {
     const a = AMAP[id]; if (PLAY) { stopSpeak(); return; }
+    if (hasTR(id) && RMOD_VIEW > 0) { const X = TX(id), m = X.mods[RMOD_VIEW - 1]; PLAY = { i: m.gs, on: true }; const step = () => { if (!PLAY || !PLAY.on) return; if (PLAY.i > m.ge) { $$(".sent.speaking").forEach(x => x.classList.remove("speaking")); stopSpeak(); return; } $$(".sent.speaking").forEach(x => x.classList.remove("speaking")); const el = $(`.sent[data-m="t"][data-s="${PLAY.i}"]`); if (el) { el.classList.add("speaking"); el.scrollIntoView({ block: "center", behavior: S.set.motion ? "smooth" : "auto" }); } say(X.flat[PLAY.i].en, S.set.voice, false, () => { if (!PLAY || !PLAY.on) return; PLAY.i++; setTimeout(step, 120); }); }; toast("用设备语音朗读本部分，再点一次停止"); markStudy(); step(); return; }
     PLAY = { i: 0, on: true }; const step = () => { if (!PLAY || !PLAY.on) return; if (PLAY.i >= a.sents.length) { $$(".sent.speaking").forEach(x => x.classList.remove("speaking")); stopSpeak(); S.stats.listen++; save(); checkBadges(); return; }
       $$(".sent.speaking").forEach(x => x.classList.remove("speaking")); const el = $(`.sent[data-s="${PLAY.i}"]`); if (el) { el.classList.add("speaking"); el.scrollIntoView({ block: "center", behavior: S.set.motion ? "smooth" : "auto" }); }
       say(a.sents[PLAY.i].en, S.set.voice, false, () => { if (!PLAY || !PLAY.on) return; PLAY.i++; setTimeout(step, 120); }); };
@@ -943,20 +1013,24 @@ function gotRecording(blob, transcript, secs) {
   <div class="row" style="margin-top:6px"><button class="btn sm" data-act="ab">先听我的，再听原声</button><button class="btn sm ghost" data-act="sorig">只听原声</button></div>${diff}`;
 }
 function playOrig(after) {
+  if (VIEW === "practice" && PR_SRC === "t" && hasTR(PR_ID) && TR[PR_ID].audio) {
+    const [x, y] = spRange(); audioLoad(PR_ID).then(() => { const el = audioEl(); const go2 = () => { const d = sEnd(y) - sStart(x); const od = $("#origdur"); if (od) { od.textContent = d.toFixed(1) + " 秒（现场）"; $("#origwpm").textContent = Math.round(speakTarget().split(/\s+/).length / d * 60) + " 词/分"; } el.currentTime = sStart(x); AUD.segEnd = sEnd(y); AUD.segCb = after || null; AUD.bar = true; el.play().catch(() => {}); drawBar(); }; if (el.readyState >= 1) go2(); else el.addEventListener("loadedmetadata", go2, { once: true }); });
+    return;
+  }
   const t = speakTarget(), t0 = Date.now();
   say(t, S.set.voice, false, () => { const s = (Date.now() - t0) / 1000; const d = $("#origdur"); if (d && s > 0.3) { d.textContent = s.toFixed(1) + " 秒"; $("#origwpm").textContent = Math.round(t.split(/\s+/).length / s * 60) + " 词/分"; } after && after(); });
 }
 
 /* ---------- export ---------- */
 function vExport() {
-  const nv = Object.keys(VOC).filter(k => LEX[k]).length, ns = Object.keys(SEN).length;
+  const nv = Object.keys(VOC).filter(k => lx(k)).length, ns = Object.keys(SEN).length;
   return `<div class="sechead"><h2><span class="no">8</span>导出</h2></div>
   <div class="grid2">
    <div class="panel" id="s-pdf"><h3>8.1 导出 PDF（详细学习笔记）</h3><p class="muted" style="font-size:13px">包含学习概况、每个点学单词的音标、词性、释义、词形与原文例句，以及每个分析过句子的翻译、主干、从句、时态语态和特殊用法标注。</p><div class="row"><span class="tag">单词 ${nv}</span><span class="tag">句子 ${ns}</span></div><button class="btn" style="margin-top:10px" data-act="pdf" ${nv + ns ? "" : "disabled"}>${I.out}生成 PDF</button></div>
    <div class="panel" id="s-xlsx"><h3>8.2 导出 Excel（单词表）</h3><p class="muted" style="font-size:13px">只导出点学过的单词：单词、音标、词性与释义、英文释义、词形变化、出处文章、原文例句与翻译、点击次数、首次学习日期、熟练度。</p><button class="btn" style="margin-top:10px" data-act="xlsx" ${nv ? "" : "disabled"}>${I.out}生成 Excel</button></div>
   </div><div id="expmsg" class="muted" style="margin-top:12px;font-size:13px"></div>`;
 }
-const LIBS = PWA ? { jspdf: "vendor/jspdf.umd.min.js", h2c: "vendor/html2canvas.min.js", xlsx: "vendor/xlsx.full.min.js" } : { jspdf: "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js", h2c: "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js", xlsx: "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" };
+const LIBS = PWA ? { jspdf: "vendor/jspdf.umd.min.js", h2c: "vendor/html2canvas.min.js", xlsx: "vendor/xlsx.full.min.js", nlp: "vendor/compromise.min.js" } : { jspdf: "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js", h2c: "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js", xlsx: "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" };
 const loaded = {};
 function loadLib(k) { if (loaded[k]) return loaded[k]; loaded[k] = new Promise((res, rej) => { const s = document.createElement("script"); s.src = LIBS[k]; s.onload = res; s.onerror = () => { loaded[k] = null; rej(new Error("load")); }; document.head.appendChild(s); }); return loaded[k]; }
 async function saveFile(name, blob) {
@@ -979,9 +1053,10 @@ async function shareFile() {
 const fmtDate = t => dkey(new Date(t));
 async function exportXlsx() {
   const msg = $("#expmsg"); msg.textContent = "正在生成 Excel…";
+  if (FULL) { try { await ensureFull(); } catch (e) {} }
   try { await loadLib("xlsx"); } catch (e) { msg.textContent = PWA ? "表格组件加载失败，请刷新应用后重试。" : "表格组件加载失败，请检查网络后重试。"; return; }
-  const rows = Object.values(VOC).filter(v => LEX[v.k]).sort((a, b) => a.t - b.t).map(v => { const L = LEX[v.k], a = AMAP[v.a], s = a ? a.sents[v.s] : null;
-    return { "单词": L.w, "音标": L.ph ? "/" + L.ph + "/" : "", "词性与释义": L.tr.join("；"), "英文释义": (L.def || [])[0] || "", "词形变化": Object.entries(L.ex || {}).map(([k, x]) => k + ":" + x).join(" "), "考试标签": (L.tags || []).join(" "), "出处文章": a ? a.title + "（" + a.titleZh + "）" : "", "原文例句": s ? s.en : "", "例句翻译": s ? s.zh : "", "点击次数": v.n, "首次学习": fmtDate(v.t), "熟练度": (v.box || 0) + "/5" }; });
+  const rows = Object.values(VOC).filter(v => lx(v.k)).sort((a, b) => a.t - b.t).map(v => { const L = lx(v.k), a = AMAP[v.a], s = a ? vSent(v) : null;
+    return { "单词": L.w, "音标": L.ph ? "/" + L.ph + "/" : "", "词性与释义": L.tr.join("；"), "英文释义": (L.def || [])[0] || "", "词形变化": Object.entries(L.ex || {}).map(([k, x]) => k + ":" + x).join(" "), "考试标签": (L.tags || []).join(" "), "出处文章": a ? a.title + "（" + a.titleZh + "）" : "", "原文例句": s ? s.en : "", "例句翻译": s ? (s.zhPara ? (s.zh ? "【本段译文】" + s.zh : "") : s.zh) : "", "点击次数": v.n, "首次学习": fmtDate(v.t), "熟练度": (v.box || 0) + "/5" }; });
   const ws = XLSX.utils.json_to_sheet(rows); ws["!cols"] = [14, 16, 40, 40, 30, 20, 34, 60, 40, 8, 12, 8].map(w => ({ wch: w }));
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "单词表");
   const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
@@ -999,16 +1074,17 @@ async function renderPagesToPdf(pages, name, landscape) {
 }
 async function exportPdf() {
   const msg = $("#expmsg"); msg.textContent = "正在排版 PDF…";
+  if (FULL) { try { await ensureFull(); } catch (e) {} }
   const root = $("#pdfroot"); root.innerHTML = "";
   const items = [];
-  const vs = Object.values(VOC).filter(v => LEX[v.k]).sort((a, b) => a.t - b.t);
-  const ss = Object.values(SEN).filter(v => AMAP[v.a]).sort((a, b) => a.t - b.t);
+  const vs = Object.values(VOC).filter(v => lx(v.k)).sort((a, b) => a.t - b.t);
+  const ss = Object.values(SEN).filter(v => AMAP[v.a] && (v.m !== "t" || hasTR(v.a))).sort((a, b) => a.t - b.t);
   items.push(`<h1>TED 精读学习笔记</h1><div style="color:#5A6B62;margin:4px 0 14px">导出日期 ${todayK()} · 已完成 ${S.done.length}/20 篇 · 点学单词 ${vs.length} 个 · 分析句子 ${ss.length} 句 · 连续学习 ${streak()} 天 · Lv.${levelOf(S.xp).i}</div>`);
   if (S.done.length) items.push(`<h2>已完成文章</h2>` + S.done.map(d => `<div>· ${esc(AMAP[d.a].title)}（${esc(AMAP[d.a].titleZh)}）— ${d.d}</div>`).join(""));
-  if (vs.length) { items.push("<h2>一、单词详注</h2>"); vs.forEach((v, i) => { const L = LEX[v.k], a = AMAP[v.a], s = a ? a.sents[v.s] : null, K = a && a.keys[v.k];
-    items.push(`<div class="pw"><b>${i + 1}. ${esc(L.w)}</b> <span style="color:#5A6B62">/${esc(L.ph)}/</span> ${(L.tags || []).slice(0, 4).map(t => `<span style="font-size:10px;color:#B3801F">${t}</span>`).join(" ")}<div>${L.tr.map(esc).join("；")}</div>${Object.keys(L.ex || {}).length ? `<div style="color:#5A6B62;font-size:11px">${Object.entries(L.ex).map(([k, x]) => k + " " + esc(x)).join(" · ")}</div>` : ""}${K ? `<div><b>用法</b>：${esc(K.use)}<br><i>${esc(K.ex)}</i> ${esc(K.exZh)}</div>` : ""}${s ? `<div style="margin-top:3px"><b>原文</b>：${esc(s.en)}<br><span style="color:#5A6B62">${esc(s.zh)}</span></div>` : ""}<div style="color:#8A9A91;font-size:10.5px">出处：${esc(a ? a.titleZh : "")} · 点击 ${v.n} 次 · ${fmtDate(v.t)}</div></div>`); }); }
-  if (ss.length) { items.push("<h2>二、句子解析</h2>"); ss.forEach((v, i) => { const a = AMAP[v.a], s = a.sents[v.s], an = s.an;
-    items.push(`<div class="pw"><b>${i + 1}.</b> ${esc(s.en)}<div style="color:#5A6B62">${esc(s.zh)}</div><div class="an">句型：${esc(an.kind)}${an.passive ? " · 含被动" : ""}${an.inv ? " · 倒装" : ""}　主干：<span style="color:#2B5FA0">${esc(an.skel.S)}</span> | <span style="color:#B4433A">${esc(an.skel.V)}</span>${an.skel.O ? " | <span style='color:#2F7D47'>" + esc(an.skel.O) + "</span>" : ""}</div>${an.clauses.map(c => `<div class="an">· ${esc(c.type)}：${esc(c.text)}${c.detail ? "（" + esc(c.detail) + "）" : ""}</div>`).join("")}<div class="an">谓语：${an.verbs.map(x => esc(x.form) + "（" + esc(x.tense) + "，" + esc(x.voice) + "）").join("；")}</div>${an.nf.length ? `<div class="an">非谓语：${an.nf.map(x => esc(x.word) + "（" + esc(x.type) + "作" + esc(x.fn) + "）").join("；")}</div>` : ""}${an.notes.map(n => `<div class="an" style="color:#8A6413">★ ${esc(n)}</div>`).join("")}${AIC["s_" + v.a + "_" + v.s] && AIC["s_" + v.a + "_" + v.s].structure ? `<div class="an">AI：${esc(AIC["s_" + v.a + "_" + v.s].structure)}</div>` : ""}<div style="color:#8A9A91;font-size:10.5px">出处：${esc(a.titleZh)}</div></div>`); }); }
+  if (vs.length) { items.push("<h2>一、单词详注</h2>"); vs.forEach((v, i) => { const L = lx(v.k), a = AMAP[v.a], s = a ? vSent(v) : null, K = a && a.keys[v.k];
+    items.push(`<div class="pw"><b>${i + 1}. ${esc(L.w)}</b> <span style="color:#5A6B62">/${esc(L.ph)}/</span> ${(L.tags || []).slice(0, 4).map(t => `<span style="font-size:10px;color:#B3801F">${t}</span>`).join(" ")}<div>${L.tr.map(esc).join("；")}</div>${Object.keys(L.ex || {}).length ? `<div style="color:#5A6B62;font-size:11px">${Object.entries(L.ex).map(([k, x]) => k + " " + esc(x)).join(" · ")}</div>` : ""}${K ? `<div><b>用法</b>：${esc(K.use)}<br><i>${esc(K.ex)}</i> ${esc(K.exZh)}</div>` : ""}${s ? `<div style="margin-top:3px"><b>原文</b>：${esc(s.en)}<br><span style="color:#5A6B62">${s.zhPara ? (s.zh ? "【本段译文】" + esc(s.zh) : "") : esc(s.zh)}</span></div>` : ""}<div style="color:#8A9A91;font-size:10.5px">出处：${esc(a ? a.titleZh : "")} · 点击 ${v.n} 次 · ${fmtDate(v.t)}</div></div>`); }); }
+  if (ss.length) { items.push("<h2>二、句子解析</h2>"); ss.forEach((v, i) => { const a = AMAP[v.a], s = vSent(v), an = s && s.an; if (!an) return;
+    items.push(`<div class="pw"><b>${i + 1}.</b> ${esc(s.en)}<div style="color:#5A6B62">${s.zhPara ? (s.zh ? "【本段译文】" + esc(s.zh) : "") : esc(s.zh)}</div><div class="an">句型：${esc(an.kind)}${an.passive ? " · 含被动" : ""}${an.inv ? " · 倒装" : ""}　主干：<span style="color:#2B5FA0">${esc(an.skel.S)}</span> | <span style="color:#B4433A">${esc(an.skel.V)}</span>${an.skel.O ? " | <span style='color:#2F7D47'>" + esc(an.skel.O) + "</span>" : ""}</div>${an.clauses.map(c => `<div class="an">· ${esc(c.type)}：${esc(c.text)}${c.detail ? "（" + esc(c.detail) + "）" : ""}</div>`).join("")}<div class="an">谓语：${an.verbs.map(x => esc(x.form) + "（" + esc(x.tense) + "，" + esc(x.voice) + "）").join("；")}</div>${an.nf.length ? `<div class="an">非谓语：${an.nf.map(x => esc(x.word) + "（" + esc(x.type) + "作" + esc(x.fn) + "）").join("；")}</div>` : ""}${an.notes.map(n => `<div class="an" style="color:#8A6413">★ ${esc(n)}</div>`).join("")}${AIC["s_" + v.a + "_" + v.s] && AIC["s_" + v.a + "_" + v.s].structure ? `<div class="an">AI：${esc(AIC["s_" + v.a + "_" + v.s].structure)}</div>` : ""}<div style="color:#8A9A91;font-size:10.5px">出处：${esc(a.titleZh)}${v.m === "t" ? " · 演讲全文" : ""}</div></div>`); }); }
   // paginate
   const pages = []; let page = null, used = 0; const LIM = 1123 - 56 - 80;
   const newPage = () => { page = document.createElement("div"); page.className = "pp"; root.appendChild(page); pages.push(page); used = 0; };
@@ -1089,7 +1165,7 @@ function tocMenu(btn) {
   closeMenus(); const mode = document.documentElement.dataset.mode;
   if (mode === "L") { const c = !document.documentElement.classList.contains("sidecol"); document.documentElement.classList.toggle("sidecol", c); LS.set("sidecol", c); return; }
   const m = document.createElement("div"); m.className = "menu tocmenu";
-  m.innerHTML = `<h4>目录</h4><div class="tg">${NAV.map(n => `<button class="ni ${VIEW === n.v ? "on" : ""}" data-act="go" data-v="${n.v}">${I[n.ic]}<span>${n.no}. ${n.n}</span></button>${VIEW === n.v && n.subs.length ? `<div class="subs">${n.subs.map((s, j) => `<button data-act="sub" data-v="${n.v}" data-a="${s[1]}">${n.no}.${j + 1} ${esc(s[0])}</button>`).join("")}</div>` : ""}`).join("")}</div>`;
+  m.innerHTML = `<h4>目录</h4><div class="tg">${NAV.map(n => `<button class="ni ${VIEW === n.v ? "on" : ""}" data-act="go" data-v="${n.v}">${I[n.ic]}<span>${n.no}. ${n.n}</span></button>${VIEW === n.v && subsOf(n).length ? `<div class="subs">${subsOf(n).map((s, j) => `<button data-act="sub" data-v="${n.v}" data-a="${s[1]}">${n.no}.${j + 1} ${esc(s[0])}</button>`).join("")}</div>` : ""}`).join("")}</div>`;
   document.body.appendChild(m);
 }
 function screenMenu(btn) {
@@ -1112,6 +1188,539 @@ function confetti(n) {
   const t0 = performance.now();
   const f = t => { const el = t - t0; cx.clearRect(0, 0, innerWidth, innerHeight); ps.forEach(p => { p.vy += .35; p.x += p.vx; p.y += p.vy; p.a += p.va; cx.save(); cx.translate(p.x, p.y); cx.rotate(p.a); cx.fillStyle = p.c; cx.globalAlpha = Math.max(0, 1 - el / 2200); cx.fillRect(-p.r, -p.r / 2, p.r * 2, p.r); cx.restore(); }); if (el < 2200) requestAnimationFrame(f); else cx.clearRect(0, 0, innerWidth, innerHeight); };
   requestAnimationFrame(f);
+}
+
+/* ======================================================================
+   v1.2 — full TED transcripts imported by the learner, modules, live audio
+   Everything below runs only in the installable App (PWA). Imported text
+   and audio stay on the learner's own device.
+   ====================================================================== */
+const FULL = PWA;
+let TR = {};                         // aid -> imported transcript (parsed)
+let DICT = null, DICTP = null;       // big offline dictionary (ECDICT subset)
+const DCACHE = {};
+const TAGC = { z: "中考", g: "高考", "4": "CET4", "6": "CET6", k: "考研", t: "托福", i: "雅思", r: "GRE" };
+const EXC = { p: "过去式", d: "过去分词", i: "现在分词", "3": "三单", r: "比较级", t: "最高级", s: "复数" };
+function lx(k) {
+  if (!k) return null;
+  if (LEX[k]) return LEX[k];
+  if (DCACHE[k]) return DCACHE[k];
+  if (!DICT) return null;
+  const r = DICT.w[k]; if (!r) return null;
+  const e = { w: k, ph: r[0], tr: r[1].split("\n"), def: [], ex: {}, tags: [...(r[2] || "")].map(c => TAGC[c]).filter(Boolean), c: r[4] };
+  (r[3] || "").split("/").forEach(p => { const i = p.indexOf(":"); if (i > 0) { const t = EXC[p.slice(0, i)]; if (t) e.ex[t] = p.slice(i + 1); } });
+  return (DCACHE[k] = e);
+}
+function ensureDict() {
+  if (DICT) return Promise.resolve(DICT);
+  if (!FULL) return Promise.resolve(null);
+  if (!DICTP) DICTP = fetch("dict.json").then(r => { if (!r.ok) throw new Error("dict"); return r.json(); }).then(d => { DICT = d; return d; }).catch(e => { DICTP = null; throw e; });
+  return DICTP;
+}
+function ensureNLP() { return window.nlp ? Promise.resolve(window.nlp) : loadLib("nlp").then(() => window.nlp); }
+function ensureFull() { return Promise.all([ensureDict(), ensureNLP()]); }
+const hasTR = id => FULL && !!TR[id];
+function saveTR() { LS.set("tr", TR); }
+
+/* ---------- dictionary key resolution ---------- */
+function keyFor(word) {
+  let w = String(word).toLowerCase().replace(/[’‘]/g, "'").replace(/^[-'"]+|[-'"]+$/g, "");
+  w = w.replace(/n't$/, "").replace(/'(s|re|ve|ll|d|m)$/, "");
+  if (!w || !/[a-z]/.test(w) || /\d/.test(w)) return null;
+  const has = k => k && (LEX[k] || (DICT && DICT.w[k]));
+  if (has(w)) return w;
+  const f = DICT && DICT.f[w]; if (has(f)) return f;
+  const c = [];
+  if (/ies$/.test(w)) c.push(w.slice(0, -3) + "y");
+  if (/(s|x|z|ch|sh)es$/.test(w)) c.push(w.slice(0, -2));
+  if (/s$/.test(w) && !/ss$/.test(w)) c.push(w.slice(0, -1));
+  if (/ied$/.test(w)) c.push(w.slice(0, -3) + "y");
+  if (/ed$/.test(w)) { c.push(w.slice(0, -2), w.slice(0, -1)); if (/(.)\1ed$/.test(w)) c.push(w.slice(0, -3)); }
+  if (/ing$/.test(w)) { c.push(w.slice(0, -3), w.slice(0, -3) + "e"); if (/(.)\1ing$/.test(w)) c.push(w.slice(0, -4)); }
+  if (/ier$|iest$/.test(w)) c.push(w.replace(/i(er|est)$/, "y"));
+  if (/er$|est$/.test(w)) c.push(w.replace(/(er|est)$/, ""), w.replace(/(r|st)$/, ""));
+  if (/ly$/.test(w)) c.push(w.slice(0, -2));
+  for (const x of c) if (has(x)) return x;
+  if (w.includes("-")) { const p = w.split("-").filter(Boolean); if (p.length > 1 && has(p[p.length - 1])) return "~" + w; }
+  return "~" + w;
+}
+
+/* ---------- transcript parsing ---------- */
+const TS_RE = /^(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?:\s+|$)/;
+const JUNK_RE = /^(transcript|read along|english|chinese|简体中文|中文（简体）|中文|繁體中文|share|translated by\b.*|reviewed by\b.*|transcribed by\b.*|翻译人员.*|校对人员.*|译者.*|校对.*|[\d,]+ views?|.*\| ted( talk)?)$/i;
+function parseRaw(raw) {
+  const lines = String(raw || "").replace(/\r/g, "").replace(/ /g, " ").split("\n").map(l => l.trim()).filter(Boolean);
+  const out = []; let pend = null;
+  for (let l of lines) {
+    const m = l.match(TS_RE);
+    if (m) { pend = (+m[1] || 0) * 3600 + (+m[2]) * 60 + (+m[3]); l = l.slice(m[0].length).trim(); if (!l) continue; }
+    if (JUNK_RE.test(l)) continue;
+    out.push({ t: pend, text: l }); pend = null;
+  }
+  return out;
+}
+const cjkRatio = s => { const t = s.replace(/\s/g, ""); if (!t) return 0; return (t.match(/[㐀-鿿]/g) || []).length / t.length; };
+function splitSents(text) {
+  const arr = window.nlp(text).sentences().out("array").map(x => x.trim()).filter(Boolean);
+  return arr.length ? arr : [text];
+}
+function buildTranscript(enRaw, zhRaw) {
+  let en = parseRaw(enRaw);
+  if (!en.length) throw new Error("没有识别到英文内容");
+  // one giant block → chunk into paragraphs of ~5 sentences
+  let paras = [];
+  en.forEach(p => {
+    const s = splitSents(p.text);
+    if (s.length > 9 && en.length < 4) { for (let i = 0; i < s.length; i += 5) paras.push({ t: i === 0 ? p.t : null, s: s.slice(i, i + 5) }); }
+    else paras.push({ t: p.t, s });
+  });
+  const words = paras.reduce((n, p) => n + p.s.join(" ").split(/\s+/).length, 0);
+  // Chinese alignment
+  let zhMode = "none";
+  const zh = zhRaw ? parseRaw(zhRaw) : [];
+  if (zh.length) {
+    const enT = paras.filter(p => p.t != null).length, zhT = zh.filter(p => p.t != null).length;
+    if (enT >= paras.length * 0.6 && zhT >= zh.length * 0.6) {
+      zhMode = "ts";
+      const byT = zh.filter(p => p.t != null);
+      paras.forEach(p => { if (p.t == null) return; let best = null, bd = 3; byT.forEach(z => { const d = Math.abs(z.t - p.t); if (d <= bd) { bd = d; best = z; } }); if (best) { p.zh = (p.zh ? p.zh : "") + best.text; best.used = 1; } });
+      byT.filter(z => !z.used).forEach(z => { let k = 0; paras.forEach((p, i) => { if (p.t != null && p.t <= z.t) k = i; }); paras[k].zh = (paras[k].zh || "") + z.text; });
+    } else if (zh.length === paras.length) { zhMode = "idx"; paras.forEach((p, i) => p.zh = zh[i].text); }
+    else { zhMode = "ratio"; zh.forEach((z, i) => { const k = Math.min(paras.length - 1, Math.floor(i * paras.length / zh.length)); paras[k].zh = (paras[k].zh || "") + z.text; }); }
+  }
+  // modules ~330–420 words, never splitting a paragraph
+  const mods = []; let cur = [], w = 0;
+  paras.forEach((p, i) => {
+    const pw = p.s.join(" ").split(/\s+/).length;
+    if (cur.length && w + pw > 430 && w >= 220) { mods.push(cur); cur = []; w = 0; }
+    cur.push(i); w += pw;
+    if (w >= 330) { mods.push(cur); cur = []; w = 0; }
+  });
+  if (cur.length) { if (mods.length && w < 120) mods[mods.length - 1].push(...cur); else mods.push(cur); }
+  return { v: 1, at: Date.now(), paras: paras.map(p => ({ t: p.t, s: p.s, zh: p.zh || "" })), mods: mods.map(c => [c[0], c[c.length - 1]]), words, zhMode, off: 0, cal: [], audio: null };
+}
+/* derived view of a transcript: flat sentence list and module ranges */
+const TXC = {};
+function TX(aid) {
+  const T = TR[aid]; if (!T) return null;
+  if (TXC[aid] && TXC[aid].T === T) return TXC[aid];
+  const flat = [], pStart = [];
+  T.paras.forEach((p, pi) => { pStart.push(flat.length); p.s.forEach(s => flat.push({ p: pi, en: s })); });
+  const mods = T.mods.map(([a, b]) => { const gs = pStart[a], ge = (b + 1 < pStart.length ? pStart[b + 1] : flat.length) - 1; return { a, b, gs, ge, n: ge - gs + 1, words: T.paras.slice(a, b + 1).reduce((n, p) => n + p.s.join(" ").split(/\s+/).length, 0), t0: T.paras[a].t, t1: b + 1 < T.paras.length ? T.paras[b + 1].t : null }; });
+  const modOf = new Array(flat.length); mods.forEach((m, i) => { for (let g = m.gs; g <= m.ge; g++) modOf[g] = i; });
+  return (TXC[aid] = { T, flat, pStart, mods, modOf });
+}
+const fmtT = s => { if (s == null || !isFinite(s)) return "--:--"; s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + ":" + String(m).padStart(2, "0") : String(m).padStart(2, "0")) + ":" + String(x).padStart(2, "0"); };
+
+/* ---------- sentence analysis in the browser (compromise) ---------- */
+const MODALS = new Set(["will", "would", "can", "could", "may", "might", "must", "shall", "should", "ought", "'ll", "'d"]);
+const BE = new Set(["am", "is", "are", "was", "were", "be", "been", "being", "'s", "'re", "'m"]);
+const HAVE = new Set(["have", "has", "had", "'ve", "having"]);
+const SUBMARK = { when: "时间", whenever: "时间", while: "时间/让步", before: "时间", after: "时间", until: "时间", till: "时间", once: "时间/条件", since: "原因/时间", as: "方式/原因/时间", because: "原因", if: "条件", unless: "条件", although: "让步", though: "让步", even: "让步", whereas: "对比", whether: "条件/让步", so: "目的/结果", where: "地点", wherever: "地点" };
+const RELW = new Set(["which", "who", "whom", "whose"]);
+const NOUNCL = new Set(["what", "how", "why", "whatever", "whoever"]);
+const COORD = new Set(["and", "but", "or", "yet", "so", "nor"]);
+function posZh(tags) {
+  const T = new Set(tags);
+  if (T.has("Pronoun")) return "代词"; if (T.has("Modal")) return "情态动词"; if (T.has("Auxiliary") || T.has("Copula")) return "助动词/系动词";
+  if (T.has("Verb")) return "动词"; if (T.has("ProperNoun")) return "专有名词"; if (T.has("Noun")) return "名词"; if (T.has("Adjective")) return "形容词";
+  if (T.has("Adverb")) return "副词"; if (T.has("Preposition")) return "介词"; if (T.has("Conjunction")) return "连词"; if (T.has("Determiner")) return "限定词";
+  if (T.has("Value") || T.has("Cardinal")) return "数词"; if (T.has("QuestionWord")) return "疑问词/关系词"; if (T.has("Expression")) return "感叹词"; return "";
+}
+function formZh(t, prevAux) {
+  const T = new Set(t.tags), lw = t.text.toLowerCase();
+  if (T.has("Gerund")) return prevAux ? "现在分词" : "动名词/现在分词";
+  if (T.has("PastTense") && T.has("Verb")) return prevAux ? "过去分词" : "过去式/过去分词";
+  if (T.has("Plural") && T.has("Noun")) return "名词复数";
+  if (T.has("Comparative")) return "比较级"; if (T.has("Superlative")) return "最高级";
+  if (T.has("PresentTense") && T.has("Verb") && /s$/.test(lw) && !T.has("Infinitive")) return "第三人称单数";
+  return "";
+}
+function analyzeSentence(text) {
+  const doc = window.nlp(text);
+  const offs = []; let acc = 0; doc.docs.forEach((d, n) => { offs[n] = acc; acc += d.length; });
+  const terms = [].concat(...doc.docs).map(t => ({ text: t.text || "", pre: t.pre || "", post: t.post || "", normal: t.text ? (t.normal || "") : (t.implicit || t.normal || ""), tags: Array.from(t.tags || []) }));
+  const gix = x => offs[x.index[0]] + x.index[1];
+  const toks = [], t2k = [];
+  terms.forEach((t, i) => {
+    if (t.pre) toks.push([t.pre, null, ""]);
+    if (t.text) {
+      const prev = i > 0 ? terms[i - 1] : null;
+      const prevAux = prev && (BE.has((prev.normal || prev.text).toLowerCase()) || HAVE.has((prev.normal || prev.text).toLowerCase()));
+      t2k[i] = toks.length; toks.push([t.text, keyFor(t.text), "", posZh(t.tags), formZh(t, prevAux)]);
+    } else t2k[i] = null;
+    if (t.post) toks.push([t.post, null, ""]);
+  });
+  const role = new Array(toks.length).fill("-");
+  const tokRange = ids => { const ks = ids.map(i => t2k[i]).filter(x => x != null); return ks.length ? [Math.min(...ks), Math.max(...ks)] : null; };
+  // clauses
+  const clauses = []; let kind = "简单句", hasSub = false, hasCo = false;
+  const clist = doc.clauses();
+  clist.forEach((c, ci) => {
+    const ids = [].concat(...c.docs).map(gix); if (!ids.length) return;
+    const first = terms[ids[0]], fw = (first.normal || first.text).toLowerCase();
+    const txt = c.text().trim(); let type = null, detail = "";
+    if (RELW.has(fw)) { type = "定语从句"; detail = "关系词 " + first.text; }
+    else if (fw === "that") { const prev = ids[0] > 0 ? terms[ids[0] - 1] : null; if (prev && prev.tags.includes("Noun")) { type = "定语从句/同位语从句"; detail = "由 that 引导，修饰 " + prev.text; } else { type = "宾语/表语从句"; detail = "由 that 引导"; } }
+    else if (NOUNCL.has(fw)) { type = "名词性从句"; detail = "由 " + first.text + " 引导"; }
+    else if (SUBMARK[fw] && !(ci === 0 && fw === "so")) { type = "状语从句"; detail = "由 " + first.text + " 引导，表" + SUBMARK[fw]; }
+    else if (ci === 0 && /^(had|were|should)$/.test(fw)) { type = "倒装条件句"; detail = "省略 if 的倒装（虚拟语气）"; }
+    else if (COORD.has(fw) && ci > 0) { type = "并列分句"; detail = "由 " + first.text + " 连接"; }
+    if (!type || clist.length < 2) return;
+    if (type === "并列分句") hasCo = true; else hasSub = true;
+    const r = tokRange(ids); if (!r) return;
+    clauses.push({ type, text: txt.replace(/[,;]\s*$/, ""), detail, a: r[0], b: r[1] });
+  });
+  const setKind = () => { kind = hasSub && hasCo ? "并列复合句" : hasSub ? "复合句" : hasCo ? "并列句" : "简单句"; }; setKind();
+  const inCl = i => clauses.some(c => c.type !== "并列分句" && i >= c.a && i <= c.b);
+  // verbs
+  const verbs = [], nf = []; let mainV = null;
+  const vps = [];
+  doc.verbs().forEach(v => { const j = v.json()[0]; if (!j || !j.verb) return; vps.push({ ids: [].concat(...v.docs).map(gix), vb: j.verb, text: v.text() }); });
+  for (let k = 0; k + 1 < vps.length; k++) {
+    const A = vps[k], B = vps[k + 1];
+    const onlyAux = A.ids.every(i => { const w = (terms[i].normal || terms[i].text).toLowerCase().replace(/n't$/, ""); return !w || BE.has(w) || HAVE.has(w) || MODALS.has(w); });
+    const gap = B.ids[0] - A.ids[A.ids.length - 1] - 1;
+    const between = terms.slice(A.ids[A.ids.length - 1] + 1, B.ids[0]);
+    if (onlyAux && gap >= 0 && gap <= 2 && between.every(t => t.tags.includes("Adverb") || t.tags.includes("Negative") || !["Noun", "Pronoun", "Determiner", "Verb", "Preposition", "Conjunction", "Adjective"].some(x => t.tags.includes(x)))) {
+      const ids = A.ids.concat(between.map((_, x) => A.ids[A.ids.length - 1] + 1 + x), B.ids);
+      vps.splice(k, 2, { ids, vb: Object.assign({}, B.vb, { grammar: Object.assign({}, B.vb.grammar, { isInfinitive: false }) }), text: ids.map(i => terms[i].text).filter(Boolean).join(" ") });
+    }
+  }
+  vps.forEach((P, pIdx) => {
+    const vb = P.vb, g = vb.grammar || {}; const v = { text: () => P.text };
+    const ids = P.ids;
+    const w0 = (terms[ids[0]].normal || terms[ids[0]].text).toLowerCase();
+    if (ids.length === 1 && /^(still|yet|so|like|well|now)$/.test(w0)) return;
+    { const lastT = terms[ids[ids.length - 1]], pre = ids[0] > 0 ? terms[ids[0] - 1] : null; if (lastT.tags.includes("Gerund") && pre && pre.tags.includes("Preposition") && !ids.some(i => BE.has((terms[i].normal || terms[i].text).toLowerCase()))) return; }
+    if (pIdx === 0 && ids[0] === 0 && ids.length === 1 && vps.length > 1 && terms[0].tags.includes("PastTense") && /,/.test(terms.slice(0, vps[1].ids[0]).map(t => t.post).join(""))) { nf.push({ type: "过去分词", fn: "句首状语（条件/原因）", word: terms[0].text, lemma: terms[0].text, text: terms.slice(0, Math.min(6, vps[1].ids[0])).map(t => t.text).join(" ") }); return; }
+    let relV = false; { let k = ids[0] - 1; while (k >= 0 && terms[k].tags.includes("Adverb")) k--; const rw = k >= 0 ? (terms[k].normal || terms[k].text).toLowerCase() : ""; if ((RELW.has(rw) || rw === "that") && k > 0 && terms[k - 1].tags.includes("Noun") && vps.length > 1) relV = true; if (relV && !clauses.some(c => t2k[k] != null && c.a <= t2k[k] && c.b >= t2k[k])) { const end = pIdx + 1 < vps.length ? vps[pIdx + 1].ids[0] - 1 : terms.length - 1; let e2 = ids[ids.length - 1]; for (let x = e2 + 1; x <= end && !/[,;:]/.test(terms[x - 1].post || ""); x++) { if (pIdx + 1 < vps.length && x >= vps[pIdx + 1].ids[0]) break; e2 = x; } const r2 = tokRange([k, e2].concat(ids)); if (r2) { clauses.push({ type: "定语从句", text: terms.slice(k, e2 + 1).map(t => t.text).join(" "), detail: "关系词 " + terms[k].text + "，修饰 " + terms[k - 1].text, a: r2[0], b: r2[1] }); hasSub = true; } } }
+    const words = ids.map(i => (terms[i].normal || terms[i].text).toLowerCase().replace(/n't$/, "")).filter(Boolean);
+    if (!words.length) return;
+    const rootT = terms[ids[ids.length - 1]];
+    if (g.isInfinitive) {
+      const prev = ids[0] > 0 ? terms[ids[0] - 1] : null;
+      if (prev && prev.text.toLowerCase() === "to") nf.push({ type: "不定式", fn: "目的/补足/宾语等", word: "to " + vb.infinitive, lemma: vb.infinitive, text: "to " + v.text().replace(/[,.;:!?]+$/, "") });
+      return;
+    }
+    if (words.length === 1 && /ing$/.test(words[0]) && rootT.tags.includes("Gerund")) return;
+    const pw0 = ids[0] > 0 ? (terms[ids[0] - 1].normal || terms[ids[0] - 1].text).toLowerCase() : "";
+    if (words.length === 1 && (pw0 === "and" || pw0 === "or") && nf.some(n => n.type === "不定式") && rootT.tags.includes("Infinitive")) { nf.push({ type: "不定式", fn: "与前一个不定式并列", word: rootT.text, lemma: rootT.text, text: v.text() }); return; }
+    const aux = words.slice(0, -1).filter(x => MODALS.has(x) || BE.has(x) || HAVE.has(x) || x === "do" || x === "does" || x === "did" || x === "not" || x === "never");
+    const modal = words.find(x => MODALS.has(x));
+    const passive = !!g.passive || (words.slice(0, -1).some(x => BE.has(x)) && rootT.tags.includes("PastTense") && !/ing$/.test(words[words.length - 1]));
+    const perfect = words.slice(0, -1).some(x => HAVE.has(x)) && (rootT.tags.includes("PastTense") || words.includes("been"));
+    const progressive = (/ing$/.test(words[words.length - 1]) && words.slice(0, -1).some(x => BE.has(x))) || words.includes("being");
+    let tense;
+    if (modal) tense = "情态动词 " + modal + " + " + (perfect ? "完成式(have done)" : progressive ? "进行式(be doing)" : "动词原形");
+    else {
+      const finite = words.find(x => !["not", "never"].includes(x));
+      const past = ["was", "were", "had", "did"].includes(finite) || (words.length === 1 && rootT.tags.includes("PastTense")) || (!aux.length && g.tense === "PastTense");
+      if (perfect && progressive) tense = past ? "过去完成进行时" : "现在完成进行时";
+      else if (perfect) tense = past ? "过去完成时" : "现在完成时";
+      else if (progressive) tense = past ? "过去进行时" : "现在进行时";
+      else tense = past ? "一般过去时" : "一般现在时";
+    }
+    const r = tokRange(ids);
+    const isMain = r && !inCl(r[0]) && !relV;
+    if (isMain && !mainV) mainV = { ids, r, copula: !!g.copula || BE.has(words[words.length - 1]) };
+    verbs.push({ form: v.text().replace(/[,.;:!?]+$/, "").replace(/\s+/g, " "), role: isMain ? "主句谓语" : "从句谓语", tense, voice: passive ? "被动语态" : "主动语态" });
+  });
+  terms.forEach((t, i) => {
+    if (!t.tags.includes("Gerund")) return;
+    const prev = i > 0 ? terms[i - 1] : null, pw = prev ? (prev.normal || prev.text).toLowerCase() : "";
+    if (BE.has(pw)) return;
+    const fn = !prev ? "作主语" : prev.tags.includes("Preposition") ? "作介词宾语" : prev.tags.includes("Noun") ? "作后置定语/状语" : "作宾语/状语";
+    nf.push({ type: prev && prev.tags.includes("Preposition") || !prev ? "动名词" : "现在分词/动名词", fn, word: t.text, lemma: t.text, text: terms.slice(i, Math.min(terms.length, i + 5)).map(x => x.text).join(" ") });
+  });
+  setKind();
+  if (!mainV && verbs.length) { const vp = vps.find(P => !P.ids.some(i => t2k[i] != null && inCl(t2k[i]))); if (vp) { mainV = { ids: vp.ids, r: tokRange(vp.ids), copula: !!(vp.vb.grammar || {}).copula }; } }
+  // skeleton
+  const sj = (doc.sentences().json()[0] || {}).sentence || {};
+  let S = sj.subject || "", V = sj.verb || "", O = "", Od = [];
+  const firstW = terms[0] ? (terms[0].normal || terms[0].text).toLowerCase() : "";
+  const inv = /^(had|were|should|never|rarely|seldom|hardly|little|nor|only|not)$/.test(firstW) || (terms[0] && terms[0].tags.includes("Auxiliary") && !text.trim().endsWith("?"));
+  if (mainV) {
+    mainV.ids.forEach(i => { if (t2k[i] != null) role[t2k[i]] = "V"; });
+    let j = mainV.ids[mainV.ids.length - 1] + 1; while (j < terms.length && terms[j].tags.includes("Adverb")) j++;
+    const OK = t => ["Determiner", "Adjective", "Noun", "Pronoun", "Value", "Possessive", "Cardinal"].some(x => t.tags.includes(x));
+    const oi = []; while (j < terms.length && OK(terms[j])) { oi.push(j); if (/[,.;:!?]/.test(terms[j].post || "")) break; j++; }
+    if (oi.length) { O = oi.map(i => terms[i].text).join(" "); Od = [mainV.copula ? "attr" : "dobj"]; oi.forEach(i => { if (t2k[i] != null) role[t2k[i]] = "O"; }); }
+    V = mainV.ids.map(i => terms[i].text).filter(Boolean).join(" ");
+    const sBad = !S || /^(had|were|should|did|do|does|is|was|are|will|would|can|could|so|and|but|then|well|now|yet)$/i.test(S.trim()) || (() => { const sw = S.toLowerCase().split(/\s+/); const norm = terms.map(t => (t.normal || t.text).toLowerCase()); for (let i = 0; i + sw.length <= norm.length; i++) if (sw.every((w, k) => norm[i + k] === w)) return t2k[i] != null && inCl(t2k[i]); return true; })();
+    if (sBad) {
+      let k = mainV.ids[0] - 1; while (k >= 0 && terms[k].tags.includes("Adverb")) k--;
+      const inRel = x => t2k[x] != null && clauses.some(c => c.type.startsWith("定语") && t2k[x] >= c.a && t2k[x] <= c.b);
+      if (k >= 0 && (inRel(k) || /,/.test(terms[k].post || ""))) { while (k >= 0 && (inRel(k) || !terms[k].text)) k--; while (k >= 0 && /^(who|which|that)$/i.test(terms[k].text)) k--; }
+      const NP = t => ["Noun", "Pronoun", "Determiner", "Adjective", "Possessive", "Value"].some(x => t.tags.includes(x)) && !/[,;:]/.test(t.post || "");
+      const si = []; while (k >= 0 && NP(terms[k])) { si.unshift(k); k--; }
+      if (terms[0] && terms[0].tags.includes("Gerund") && mainV.ids[0] > 1) { si.length = 0; for (let x = 0; x < mainV.ids[0]; x++) si.push(x); }
+      if (si.length) { S = si.map(i => terms[i].text).join(" "); si.forEach(i => { if (t2k[i] != null) role[t2k[i]] = "S"; }); }
+      else S = "";
+      if (!S && mainV.ids[0] === 0 && terms[0].tags.includes("Verb") && !text.trim().endsWith("?")) S = "（省略主语 you，祈使句）";
+      if (!S && text.trim().endsWith("?")) { let x = mainV.ids[mainV.ids.length - 1] + 1; const NP2 = t => ["Noun", "Pronoun", "Determiner", "Adjective", "Possessive"].some(y => t.tags.includes(y)); const si2 = []; while (x < terms.length && NP2(terms[x]) && si2.length < 4) { si2.push(x); x++; if (terms[x - 1].tags.includes("Noun") || terms[x - 1].tags.includes("Pronoun")) break; } if (si2.length) { S = si2.map(i => terms[i].text).join(" ") + "（疑问句，主谓倒装）"; si2.forEach(i => { if (t2k[i] != null) role[t2k[i]] = "S"; }); } }
+    }
+  }
+  if (S && !role.includes("S")) {
+    const sw = S.toLowerCase().split(/\s+/); const norm = terms.map(t => (t.normal || t.text).toLowerCase());
+    for (let i = 0; i + sw.length <= norm.length; i++) { if (sw.every((w, k) => norm[i + k] === w)) { for (let k = 0; k < sw.length; k++) if (t2k[i + k] != null && role[t2k[i + k]] === "-") role[t2k[i + k]] = "S"; S = terms.slice(i, i + sw.length).map(t => t.text).join(" "); break; } }
+  }
+  S = S.replace(/\s+(who|which|that)$/i, "");
+  return { toks, an: { kind, skel: { S, V, O, Od }, clauses, verbs, nf: nf.slice(0, 8), passive: verbs.some(v => v.voice === "被动语态"), inv, role: role.join(""), notes: [], auto: 1 } };
+}
+const SCACHE = {};
+/* universal sentence accessor: m = "t" → transcript, else 导读 */
+function getS(aid, si, m) {
+  const a = AMAP[aid]; if (!a) return null;
+  if (m !== "t") return a.sents[si] || null;
+  const X = TX(aid); if (!X || !X.flat[si]) return null;
+  const key = aid + "|" + si, f = X.flat[si];
+  if (SCACHE[key]) return SCACHE[key];
+  const zh = X.T.paras[f.p].zh || "";
+  if (!window.nlp) return { en: f.en, zh, zhPara: 1, toks: [[f.en, null, ""]], an: null, p: f.p };
+  const r = analyzeSentence(f.en);
+  return (SCACHE[key] = { en: f.en, zh, zhPara: 1, toks: r.toks, an: r.an, p: f.p });
+}
+const vSent = v => v ? getS(v.a, v.s, v.m) : null;
+
+/* ---------- module progress & rewards ---------- */
+function tprog(aid) { return new Set((S.tprog || {})[aid] || []); }
+function modProg(aid, mi) { const X = TX(aid); if (!X) return 0; const m = X.mods[mi], set = tprog(aid); let n = 0; for (let g = m.gs; g <= m.ge; g++) if (set.has(g)) n++; return n / m.n; }
+function curMod(aid) {
+  const X = TX(aid); if (!X) return 0;
+  const saved = (S.rmod || {})[aid]; if (saved != null && saved <= X.mods.length) return saved;
+  for (let i = 0; i < X.mods.length; i++) if (modProg(aid, i) < 0.9) return i + 1;
+  return 1;
+}
+function checkModDone(aid) {
+  const X = TX(aid); if (!X) return;
+  S.mdone = S.mdone || {}; const done = new Set(S.mdone[aid] || []); let got = null;
+  X.mods.forEach((m, i) => { if (!done.has(i) && modProg(aid, i) >= 0.9) { done.add(i); got = i; } });
+  if (got == null) return;
+  S.mdone[aid] = [...done];
+  const m = multOf(Math.max(1, streak())), xp = Math.round(25 * m); S.xp += xp; S.coins += 2; save();
+  const all = done.size === X.mods.length;
+  toast(all ? `全文 ${X.mods.length} 个部分都读完了！+${xp} XP，可以做完成测验了` : `第 ${got + 1} 部分读完 +${xp} XP · 还剩 ${X.mods.length - done.size} 部分`);
+  if (all) confetti(90);
+  renderChrome();
+}
+
+/* ---------- import UI ---------- */
+function importSheet(aid) {
+  const a = AMAP[aid], T = TR[aid], base = a.ted.url.replace(/\/$/, "");
+  sheet(`<div class="t"><b>${T ? "重新导入" : "导入"}演讲全文</b><div class="faint" style="font-size:12px">${esc(a.ted.title)} — ${esc(a.ted.speaker)}</div></div>`,
+  `<ol class="steps">
+    <li><b>打开 TED 讲稿页</b><span>在 TED 官网打开这场演讲的讲稿。<span class="row" style="margin-top:6px"><a class="btn sm" href="${esc(base)}/transcript?language=en" target="_blank" rel="noopener">英文讲稿</a><a class="btn sm ghost" href="${esc(base)}/transcript?language=zh-cn" target="_blank" rel="noopener">中文讲稿</a></span></span></li>
+    <li><b>全选讲稿正文并复制</b><span>从第一段复制到最后一段，时间戳（如 00:15）一起复制效果最好：App 会用它对齐中文和音频。</span></li>
+    <li><b>粘贴到下面，点「导入」</b><span>App 会把全文拆成若干部分（每部分约 350 词），分几天精读完。导入的内容只保存在这台设备上。</span></li>
+  </ol>
+  <label class="imlab" for="imen">英文讲稿（必填）<button class="btn sm ghost" data-act="paste" data-to="imen">粘贴</button></label>
+  <textarea id="imen" class="imta" placeholder="00:04&#10;Paste the English transcript here…" spellcheck="false"></textarea>
+  <label class="imlab" for="imzh">中文讲稿（可选）<button class="btn sm ghost" data-act="paste" data-to="imzh">粘贴</button></label>
+  <textarea id="imzh" class="imta sm" placeholder="00:04&#10;在这里粘贴中文讲稿（可选）" spellcheck="false"></textarea>
+  <div id="immsg" class="muted" style="font-size:12.5px;min-height:18px"></div>
+  <div class="row" style="justify-content:flex-end">${T ? `<button class="btn ghost warn" data-act="trdel" data-id="${aid}">删除已导入全文</button>` : ""}<button class="btn" data-act="doimport" data-id="${aid}">导入</button></div>`, { kind: "drawer" });
+}
+async function doImport(aid) {
+  const en = $("#imen").value, zh = $("#imzh").value, msg = $("#immsg");
+  if (en.trim().split(/\s+/).length < 120) { msg.textContent = "英文讲稿太短了，请确认复制了完整讲稿（通常 1500 词以上）。"; return; }
+  if (cjkRatio(en) > 0.3) { msg.textContent = "英文框里看起来是中文，请把英文讲稿粘贴到第一个框。"; return; }
+  if (zh.trim() && cjkRatio(zh) < 0.2) { msg.textContent = "中文框里看起来不是中文讲稿，请检查后再导入（或清空它）。"; return; }
+  msg.textContent = "正在拆分句子…";
+  try {
+    await ensureFull();
+    const old = TR[aid];
+    const T = buildTranscript(en, zh);
+    if (old && old.audio) { T.audio = old.audio; T.off = old.off; T.cal = old.cal || []; }
+    TR[aid] = T; delete TXC[aid]; Object.keys(SCACHE).forEach(k => { if (k.startsWith(aid + "|")) delete SCACHE[k]; });
+    if (old) { (S.tprog || {})[aid] = []; (S.mdone || {})[aid] = []; }
+    saveTR(); save(); closeSheet();
+    const X = TX(aid), ts = T.paras.filter(p => p.t != null).length;
+    S.rmod = S.rmod || {}; S.rmod[aid] = 1;
+    modal(`<h2>全文已导入</h2><p class="muted">共 ${T.words} 词、${X.flat.length} 句，拆成 <b>${X.mods.length}</b> 个部分。${ts ? "已识别 " + ts + " 个时间戳，可以和现场音频对齐。" : "没有识别到时间戳：音频对齐会按文字长度估算，可在句子解析里手动校准。"}${zh.trim() ? (T.zhMode === "ts" ? "中文已按时间戳逐段对齐。" : T.zhMode === "idx" ? "中文已按段落顺序对齐。" : "中文段落数和英文不一致，已按比例大致对齐。") : ""}</p>
+      <div class="acts"><button class="btn ghost" data-act="close">稍后</button><button class="btn" data-act="startfull" data-id="${aid}">开始第 1 部分</button></div>`);
+    if (VIEW === "read" && READ_ID === aid) render();
+  } catch (e) { msg.textContent = "导入失败：" + (e && e.message ? e.message : "请检查网络后重试（首次导入需要加载词典）"); }
+}
+
+/* ---------- audio: storage (IndexedDB) ---------- */
+let IDBP = null;
+function idb() {
+  if (IDBP) return IDBP;
+  IDBP = new Promise((res, rej) => { const r = indexedDB.open("tedjd", 1); r.onupgradeneeded = () => r.result.createObjectStore("audio"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  return IDBP;
+}
+async function idbPut(k, v) { const db = await idb(); return new Promise((res, rej) => { const tx = db.transaction("audio", "readwrite"); tx.objectStore("audio").put(v, k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); }
+async function idbGet(k) { const db = await idb(); return new Promise((res, rej) => { const q = db.transaction("audio").objectStore("audio").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
+async function idbDel(k) { const db = await idb(); return new Promise(res => { const tx = db.transaction("audio", "readwrite"); tx.objectStore("audio").delete(k); tx.oncomplete = res; tx.onerror = res; }); }
+async function importAudio(aid, file) {
+  if (!file) return;
+  if (!/^(audio|video)\//.test(file.type) && !/\.(mp3|m4a|aac|wav|ogg|opus|mp4|m4v|webm|mov)$/i.test(file.name)) { toast("请选择音频或视频文件"); return; }
+  try {
+    await idbPut(aid, { blob: file, name: file.name, type: file.type || "audio/mpeg" });
+    TR[aid].audio = { name: file.name, type: file.type, size: file.size }; TR[aid].cal = []; TR[aid].off = 0; saveTR();
+    await audioLoad(aid, true);
+    toast("音频已导入，点任意段落的时间就能从那里播放");
+    if (VIEW === "read" || VIEW === "practice") render();
+  } catch (e) { toast("音频保存失败：设备存储空间可能不足"); }
+}
+async function removeAudio(aid) { await idbDel(aid); if (TR[aid]) { TR[aid].audio = null; saveTR(); } if (AUD.aid === aid) audioUnload(); render(); }
+
+/* ---------- audio: player + sync ---------- */
+const AUD = { el: null, aid: null, url: null, starts: null, loop: null, follow: true, segEnd: null, segCb: null, rate: 1, raf: 0, last: -1, bar: false };
+function audioEl() {
+  if (AUD.el) return AUD.el;
+  const el = document.createElement("audio"); el.preload = "metadata"; el.setAttribute("playsinline", ""); el.hidden = true; document.body.appendChild(el);
+  el.addEventListener("loadedmetadata", () => { computeStarts(AUD.aid); drawBar(); });
+  el.addEventListener("play", () => { tick(); drawBar(); markStudy(); stopSpeak(true); });
+  el.addEventListener("pause", () => { cancelAnimationFrame(AUD.raf); drawBar(); });
+  el.addEventListener("ended", () => { cancelAnimationFrame(AUD.raf); S.stats.listen++; save(); checkBadges(); drawBar(); });
+  return (AUD.el = el);
+}
+async function audioLoad(aid, force) {
+  if (!hasTR(aid) || !TR[aid].audio) return false;
+  if (AUD.aid === aid && AUD.url && !force) return true;
+  const rec = await idbGet(aid).catch(() => null); if (!rec) { TR[aid].audio = null; saveTR(); return false; }
+  const el = audioEl(); if (AUD.url) URL.revokeObjectURL(AUD.url);
+  AUD.url = URL.createObjectURL(rec.blob); AUD.aid = aid; AUD.loop = null; AUD.last = -1; AUD.starts = null;
+  el.src = AUD.url; el.playbackRate = AUD.rate; el.load();
+  computeStarts(aid);
+  return true;
+}
+function audioUnload() { if (AUD.el) { AUD.el.pause(); AUD.el.removeAttribute("src"); AUD.el.load(); } if (AUD.url) URL.revokeObjectURL(AUD.url); AUD.url = null; AUD.aid = null; AUD.bar = false; drawBar(); }
+function computeStarts(aid) {
+  const X = TX(aid); if (!X) return;
+  const T = X.T, dur = AUD.el && isFinite(AUD.el.duration) ? AUD.el.duration : null;
+  const P = T.paras, chars = P.map(p => p.s.join(" ").length), total = chars.reduce((a, b) => a + b, 0) || 1;
+  const est = dur || total / 15;
+  // paragraph anchors: known timestamps, interpolate the rest by characters
+  const pt = P.map(p => p.t);
+  const anchors = [[-1, 0]]; pt.forEach((t, i) => { if (t != null) anchors.push([i, t]); }); anchors.push([P.length, est]);
+  const ps = new Array(P.length);
+  for (let k = 0; k < anchors.length - 1; k++) {
+    const [i0, t0] = anchors[k], [i1, t1] = anchors[k + 1]; const from = Math.max(0, i0);
+    const segChars = chars.slice(from, i1).reduce((a, b) => a + b, 0) || 1; let acc = 0;
+    for (let i = from; i < i1; i++) { ps[i] = i === i0 ? t0 : t0 + (t1 - t0) * acc / segChars; acc += chars[i]; }
+  }
+  const raw = [];
+  P.forEach((p, i) => { const t0 = ps[i], t1 = i + 1 < P.length ? ps[i + 1] : est; const cs = p.s.map(s => s.length + 2), tot = cs.reduce((a, b) => a + b, 0); let acc = 0; p.s.forEach((s, k) => { raw.push(t0 + (t1 - t0) * acc / tot); acc += cs[k]; }); });
+  AUD.raw = raw;
+  const cal = T.cal || [];
+  let fa = 1, fb = T.off || 0;
+  if (cal.length >= 2) { const n = cal.length, mx = cal.reduce((s, c) => s + c[0], 0) / n, my = cal.reduce((s, c) => s + c[1], 0) / n; let num = 0, den = 0; cal.forEach(c => { num += (c[0] - mx) * (c[1] - my); den += (c[0] - mx) ** 2; }); if (den > 1) { fa = num / den; fb = my - fa * mx; } }
+  else if (cal.length === 1) { fb = cal[0][1] - cal[0][0]; }
+  AUD.starts = raw.map(x => Math.max(0, fa * x + fb));
+  AUD.dur = dur;
+}
+const sStart = g => AUD.starts ? AUD.starts[g] : 0;
+const sEnd = g => AUD.starts && g + 1 < AUD.starts.length ? AUD.starts[g + 1] : (AUD.dur || 1e9);
+function curIdx(t) { const a = AUD.starts; if (!a) return -1; let lo = 0, hi = a.length - 1, r = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (a[m] <= t + 0.05) { r = m; lo = m + 1; } else hi = m - 1; } return r; }
+function tick() {
+  cancelAnimationFrame(AUD.raf);
+  const el = AUD.el; if (!el || el.paused) return;
+  const t = el.currentTime;
+  if (AUD.segEnd != null && t >= AUD.segEnd) { el.pause(); const cb = AUD.segCb; AUD.segEnd = null; AUD.segCb = null; if (cb) cb(); return; }
+  if (AUD.loop != null && t >= sEnd(AUD.loop) - 0.03) { el.currentTime = sStart(AUD.loop); }
+  const g = curIdx(t);
+  if (g !== AUD.last) { AUD.last = g; onSentence(g); }
+  const tm = $("#abtime"); if (tm) tm.textContent = fmtT(t) + " / " + fmtT(AUD.dur);
+  const pb = $("#abprog"); if (pb && AUD.dur) pb.style.width = (t / AUD.dur * 100).toFixed(2) + "%";
+  AUD.raf = requestAnimationFrame(tick);
+}
+function onSentence(g) {
+  $$(".sent.speaking").forEach(x => x.classList.remove("speaking"));
+  $$(".pl.on").forEach(x => x.classList.remove("on"));
+  if (g < 0) return;
+  const X = TX(AUD.aid);
+  if (VIEW === "read" && READ_ID === AUD.aid && X && AUD.follow) {
+    const mi = X.modOf[g] + 1;
+    if (RMOD_VIEW !== mi) { setMod(AUD.aid, mi); }
+  }
+  const el = $(`.sent[data-m="t"][data-s="${g}"]`);
+  if (el) { el.classList.add("speaking"); if (AUD.follow) el.scrollIntoView({ block: "center", behavior: S.set.motion ? "smooth" : "auto" }); }
+  const pl = $(`.pl[data-g="${g}"]`); if (pl) { pl.classList.add("on"); if (AUD.follow) pl.scrollIntoView({ block: "nearest" }); }
+}
+async function playAt(aid, g, opts = {}) {
+  if (!(await audioLoad(aid))) { toast("这篇还没有导入音频"); return; }
+  const el = audioEl(); AUD.bar = true;
+  const go2 = () => { el.currentTime = sStart(g); AUD.segEnd = opts.seg ? sEnd(g) : null; AUD.segCb = opts.cb || null; el.playbackRate = AUD.rate; el.play().catch(() => toast("点一下播放键开始")); drawBar(); };
+  if (el.readyState >= 1) go2(); else el.addEventListener("loadedmetadata", go2, { once: true });
+}
+function drawBar() {
+  let b = $("#abar");
+  const show = AUD.bar && AUD.aid && (VIEW === "read" || VIEW === "practice");
+  if (!show) { if (b) b.remove(); document.documentElement.classList.remove("hasabar"); return; }
+  if (!b) { b = document.createElement("div"); b.id = "abar"; b.className = "abar"; document.body.appendChild(b); }
+  document.documentElement.classList.add("hasabar");
+  const el = AUD.el, playing = el && !el.paused, a = AMAP[AUD.aid];
+  b.innerHTML = `<div class="abprog"><i id="abprog" style="width:${el && AUD.dur ? (el.currentTime / AUD.dur * 100).toFixed(2) : 0}%"></i></div>
+  <div class="abrow"><button class="abbtn big" data-act="ab-play" aria-label="播放/暂停">${playing ? I.pause : I.play}</button>
+  <button class="abbtn" data-act="ab-seek" data-d="-5" aria-label="后退 5 秒">−5s</button><button class="abbtn" data-act="ab-seek" data-d="5" aria-label="前进 5 秒">+5s</button>
+  <div class="abmeta"><b>${esc(a.titleZh)}</b><span class="num" id="abtime">${fmtT(el ? el.currentTime : 0)} / ${fmtT(AUD.dur)}</span></div>
+  <button class="abbtn" data-act="ab-rate">${AUD.rate}×</button>
+  <button class="abbtn ${AUD.loop != null ? "on" : ""}" data-act="ab-loop" title="单句循环">单句循环</button>
+  <button class="abbtn ${AUD.follow ? "on" : ""}" data-act="ab-follow" title="跟随高亮">跟随</button>
+  <button class="abbtn" data-act="ab-close" aria-label="关闭播放条">${I.x}</button></div>`;
+}
+function calibrateHere(aid, g) {
+  const el = AUD.el; if (!el || AUD.aid !== aid || !AUD.raw) { toast("先播放这篇的音频，再在句子开始时点「对齐」"); return; }
+  const T = TR[aid]; T.cal = (T.cal || []).filter(c => Math.abs(c[0] - AUD.raw[g]) > 20).concat([[AUD.raw[g], Math.max(0, el.currentTime - 0.25)]]).slice(-6);
+  saveTR(); computeStarts(aid); AUD.last = -1; toast(`已对齐（共 ${T.cal.length} 个校准点）。两处以上校准，整篇会更准`);
+}
+
+/* ---------- reader: module rendering ---------- */
+let RMOD_VIEW = 0;
+function setMod(aid, mi) { S.rmod = S.rmod || {}; S.rmod[aid] = mi; RMOD_VIEW = mi; saveSoon(); const box = $("#reader"); if (!box) return render(); renderReaderBody(); const tb = $("#modtabs"); window.scrollTo({ top: tb ? Math.max(0, tb.getBoundingClientRect().top + window.scrollY - 70) : 0, behavior: "auto" }); }
+function modTabs(aid) {
+  const X = TX(aid); const mi = RMOD_VIEW;
+  const done = new Set((S.mdone || {})[aid] || []);
+  return `<div class="modtabs" role="tablist"><button class="mt ${mi === 0 ? "on" : ""}" data-act="mod" data-i="0">导读</button>${X.mods.map((m, i) => `<button class="mt ${mi === i + 1 ? "on" : ""} ${done.has(i) ? "ok" : ""}" data-act="mod" data-i="${i + 1}"><b>${i + 1}</b>${m.t0 != null ? `<span class="num">${fmtT(m.t0)}</span>` : ""}${done.has(i) ? "<i>✓</i>" : `<em style="--p:${Math.round(modProg(aid, i) * 100)}%"></em>`}</button>`).join("")}</div>`;
+}
+function moduleHTML(aid, mi) {
+  const X = TX(aid), m = X.mods[mi - 1], T = X.T, a = AMAP[aid]; const vset = new Set(Object.keys(VOC)); const set = tprog(aid);
+  let html = `<div class="modhead"><div><b>第 ${mi} 部分</b><span class="muted"> / 共 ${X.mods.length} 部分 · ${m.words} 词${m.t0 != null ? " · " + fmtT(m.t0) + (m.t1 != null ? "–" + fmtT(m.t1) : " 起") : ""}</span></div><div class="row">${T.audio ? `<button class="btn sm" data-act="playmod" data-g="${m.gs}">${I.play}从本部分播放</button>` : `<button class="btn sm ghost" data-act="audiopanel">${I.ear}现场原声</button>`}</div></div>`;
+  for (let p = m.a; p <= m.b; p++) {
+    const P = T.paras[p], g0 = X.pStart[p];
+    const en = P.s.map((_, k) => {
+      const g = g0 + k, s = getS(aid, g, "t");
+      return `<span class="sent${set.has(g) ? " rd" : ""}" data-m="t" data-s="${g}">${s.toks.map((t, ti) => t[1] ? `<span class="w${a.keys[t[1]] ? " kw" : ""}${vset.has(t[1]) ? " seen" : ""}" data-t="${ti}">${esc(t[0])}</span>${t[2]}` : esc(t[0]) + t[2]).join("")}</span>`;
+    }).join(" ");
+    const stamp = P.t != null || T.audio ? `<button class="pstamp" data-act="playpara" data-g="${g0}" title="从这段播放">${I.play}<span class="num">${P.t != null ? fmtT(P.t) : "播放"}</span></button>` : "";
+    html += `<div class="pblock">${stamp}<p class="para">${en}</p>${P.zh ? `<p class="zhp"${READ_MODE === "en" ? " hidden" : ""}>${esc(P.zh)}</p>` : ""}</div>`;
+  }
+  const nav = `<div class="modnav">${mi > 1 ? `<button class="btn ghost" data-act="mod" data-i="${mi - 1}">上一部分</button>` : `<button class="btn ghost" data-act="mod" data-i="0">导读</button>`}${mi < X.mods.length ? `<button class="btn" data-act="mod" data-i="${mi + 1}">下一部分</button>` : ""}</div>`;
+  return html + nav;
+}
+function renderReaderBody() {
+  const a = AMAP[READ_ID], box = $("#reader"); if (!box) return;
+  const tabs = $("#modtabs"); if (tabs) tabs.innerHTML = modTabs(a.id);
+  box.innerHTML = RMOD_VIEW === 0 ? introHTML(a) : moduleHTML(a.id, RMOD_VIEW);
+  box.classList.toggle("zhonly", READ_MODE === "zh");
+  updReadProg(); afterRead();
+  if (AUD.aid === a.id && AUD.last >= 0) onSentence(AUD.last);
+}
+function introHTML(a) {
+  const vset = new Set(Object.keys(VOC));
+  return a.paras.map(pi => {
+    const en = pi.map(si => { const s = a.sents[si]; return `<span class="sent" data-s="${si}">${s.toks.map((t, ti) => t[1] ? `<span class="w${a.keys[t[1]] ? " kw" : ""}${vset.has(t[1]) ? " seen" : ""}" data-t="${ti}">${esc(t[0])}</span>${t[2]}` : esc(t[0]) + t[2]).join("")}</span>`; }).join(" ");
+    const zh = pi.map(si => esc(a.sents[si].zh)).join("");
+    return `<p class="para">${en}</p><p class="zhp"${READ_MODE === "en" ? " hidden" : ""}>${zh}</p>`;
+  }).join("");
+}
+function updReadProg() {
+  const a = AMAP[READ_ID]; const p = progOf(a.id);
+  const b = $("#rbar"); if (b) { b.style.width = Math.round(p * 100) + "%"; $("#rpct").textContent = Math.round(p * 100) + "%"; }
+  const f = $("#finbtn"); if (f) f.disabled = p < 0.9;
+  if (hasTR(a.id)) { const X = TX(a.id); $$(".modtabs .mt").forEach(btn => { const i = +btn.dataset.i - 1; if (i < 0) return; const em = btn.querySelector("em"); if (em) em.style.setProperty("--p", Math.round(modProg(a.id, i) * 100) + "%"); }); }
+}
+function audioPanel(aid) {
+  const a = AMAP[aid], T = TR[aid];
+  sheet(`<div class="t"><b>现场原声</b><div class="faint" style="font-size:12px">${esc(a.ted.title)}</div></div>`,
+  `${T.audio ? `<div class="note" style="background:var(--soft)">已导入：${esc(T.audio.name)}（${(T.audio.size / 1048576).toFixed(1)} MB）${(T.cal || []).length ? " · 已校准 " + T.cal.length + " 处" : ""}</div>
+    <div class="row" style="margin-top:10px"><button class="btn" data-act="playpara" data-g="0">${I.play}从头播放</button><label class="btn ghost" style="position:relative;overflow:hidden">更换文件<input type="file" accept="audio/*,video/*" data-aud="${aid}" style="position:absolute;inset:0;opacity:0"></label><button class="btn warn" data-act="audiodel" data-id="${aid}">删除音频</button></div>` :
+  `<div class="blk"><h4>方式一：导入音频或视频文件（推荐，可离线、可逐句对齐）</h4><p class="muted" style="font-size:13px;margin:0 0 8px">选择这场演讲的音频或视频文件，例如 TED 官方播客「TED Talks Daily」对应的单集。文件只存在这台设备上。</p><label class="btn" style="position:relative;overflow:hidden">${I.out}选择文件<input type="file" accept="audio/*,video/*" data-aud="${aid}" style="position:absolute;inset:0;opacity:0"></label></div>`}
+  <div class="blk"><h4>${T.audio ? "对齐说明" : "导入后怎么用"}</h4><p class="muted" style="font-size:13px;margin:0">点段落前的时间就从那里播放；播放条上可以单句循环、变速、前后跳 5 秒。播客音频开头常有片头广告，如果高亮和声音对不上：在声音刚开始读某句时，双击这句打开解析，点「这句从此刻开始」，校准两处以上整篇就准了。</p></div>
+  <div class="blk"><h4>方式二：在线听（TED 官方播放器）</h4><div class="embedbox" id="embedbox"><button class="btn ghost" data-act="embed" data-slug="${esc(a.ted.slug)}">${I.play}加载官方播放器</button><a class="btn ghost" href="${esc(a.ted.url)}" target="_blank" rel="noopener">在 TED 官网打开</a></div><p class="faint" style="font-size:12px;margin:6px 0 0">在线播放需要能访问 TED 网站，不能和讲稿逐句同步。</p></div>`, { kind: "drawer" });
 }
 
 /* ---------- events ---------- */
@@ -1142,22 +1751,22 @@ document.addEventListener("click", e => {
     case "fs": S.set.fs = Math.max(14, Math.min(26, S.set.fs + +ds.d)); applySettings(); save(); break;
     case "say": say(ds.text, ds.acc || S.set.voice); break;
     case "finish": finishQuiz(); break;
-    case "aiword": aiWord(ds.k, ds.a, +ds.s); break;
-    case "aisent": aiSent(ds.a, +ds.s); break;
+    case "aiword": aiWord(ds.k, ds.a, +ds.s, ds.m); break;
+    case "aisent": aiSent(ds.a, +ds.s, ds.m); break;
     case "qopt": QZ.ans[+ds.qi] = +ds.j; $$("input[data-qi]").forEach(i => QZ.ans[+i.dataset.qi] = i.value); { const sc = $(".modal").scrollTop; drawQuiz(); $(".modal").scrollTop = sc; } break;
     case "qsubmit": { const sc = 0; submitQuiz(); const m = $(".modal"); if (m) m.scrollTop = sc; break; }
     case "exam": closeModal(true); startExam(ds.n === "prac" ? "prac" : ds.n === "final" ? "final" : "week", +ds.n); break;
     case "memword": openWordFromMem(ds.k); break;
-    case "memsent": sheet(`<div class="t"><b>整句解析</b><div class="faint" style="font-size:12px">${esc(AMAP[ds.a].titleZh)}</div></div>`, sentHTML(ds.a, +ds.s), { kind: "drawer" }); break;
+    case "memsent": (async () => { if (ds.m === "t") { try { await ensureFull(); } catch (e) {} } sheet(`<div class="t"><b>整句解析</b><div class="faint" style="font-size:12px">${esc(AMAP[ds.a].titleZh)}${ds.m === "t" ? " · 演讲全文" : ""}</div></div>`, sentHTML(ds.a, +ds.s, ds.m), { kind: "drawer" }); })(); break;
     case "msort": MEMSORT = ds.m; render(); break;
     case "flash": startFlash(); break;
     case "flip": if (e.target.closest("[data-act=say]")) break; FL.flip = !FL.flip; drawFlash(); break;
     case "fl": rateFlash(+ds.r); break;
-    case "pplay": if (PLAY) stopSpeak(); else playFrom(0); break;
+    case "pplay": if (PR_SRC === "t" && hasTR(PR_ID) && TR[PR_ID].audio) { if (AUD.el && !AUD.el.paused && AUD.aid === PR_ID) { AUD.el.pause(); t.innerHTML = I.play; } else { playAt(PR_ID, Math.max(0, AUD.aid === PR_ID ? AUD.last : 0)); t.innerHTML = I.pause; } break; } if (PLAY) stopSpeak(); else playFrom(0); break;
     case "pstop": stopSpeak(); $$(".pl").forEach(b => b.classList.remove("on")); break;
     case "pfrom": stopSpeak(); playFrom(+ds.i); break;
     case "acc": S.set.voice = ds.a; save(); $$("[data-act=acc]").forEach(b => b.classList.toggle("on", b.dataset.a === ds.a)); { const n = $("#vname"); if (n) { const v = pickVoice(ds.a); n.textContent = v ? "当前语音：" + v.name + "（" + v.lang + "）" : "设备上没有该口音的语音，将使用默认英语语音"; } } break;
-    case "sprev": case "snext": { const a = AMAP[PR_ID]; PR_SI = Math.max(0, Math.min(a.sents.length - 1, PR_SI + (act === "snext" ? 1 : -1))); $("#sidx").textContent = `第 ${PR_SI + 1}/${a.sents.length} 句`; $("#starget").textContent = speakTarget(); $("#sresult").innerHTML = ""; break; }
+    case "sprev": case "snext": { const n = prList().length; if (SCOPE === "p") { const [x, y] = spRange(); PR_SI = act === "snext" ? Math.min(n - 1, y + 1) : Math.max(0, x - 1); if (act === "sprev") { PR_SI = spRange()[0]; } } else PR_SI = Math.max(0, Math.min(n - 1, PR_SI + (act === "snext" ? 1 : -1))); $("#sidx").textContent = `第 ${PR_SI + 1}/${n} 句`; $("#starget").textContent = speakTarget(); $("#sresult").innerHTML = ""; break; }
     case "sscope": SCOPE = ds.x; $("#scS").classList.toggle("on", SCOPE === "s"); $("#scP").classList.toggle("on", SCOPE === "p"); $("#starget").textContent = speakTarget(); break;
     case "sorig": playOrig(); break;
     case "srec": toggleRec(); break;
@@ -1179,6 +1788,28 @@ document.addEventListener("click", e => {
     case "aisave": { const c = readAiForm(); LS.set("aicfg", c); Cloud.sample = makeAI(); $("#aimsg").textContent = c.key ? "已保存" : "已保存（未填密钥，AI 功能关闭）"; break; }
     case "aiclear": { const c = readAiForm(); c.key = ""; LS.set("aicfg", c); Cloud.sample = null; render(); toast("已清除密钥"); break; }
     case "aitest": { const c = readAiForm(); if (!c.key) { $("#aimsg").textContent = "请先填写密钥"; break; } LS.set("aicfg", c); Cloud.sample = makeAI(); $("#aimsg").textContent = "测试中…"; Cloud.sample.json('请输出 {"ok":true,"word":"flourish","zh":"繁荣"}').then(r => { $("#aimsg").textContent = r && r.ok ? "连接成功，AI 补充已开启" : "已连通，但返回格式异常"; }).catch(e => { $("#aimsg").textContent = aiErr(e); }); break; }
+    case "readmod": S.rmod = S.rmod || {}; S.rmod[ds.id] = +ds.i; openRead(ds.id); break;
+    case "homeaudio": READ_ID = S.cur.art; audioPanel(S.cur.art); break;
+    case "import": closeModal(true); importSheet(ds.id || READ_ID); break;
+    case "doimport": doImport(ds.id); break;
+    case "paste": { const ta = $("#" + ds.to); if (navigator.clipboard && navigator.clipboard.readText) navigator.clipboard.readText().then(x => { ta.value = x; }).catch(() => { ta.focus(); toast("请长按输入框选择「粘贴」"); }); else { ta.focus(); toast("请长按输入框选择「粘贴」"); } break; }
+    case "trdel": if (t.dataset.armed) { delete TR[ds.id]; delete TXC[ds.id]; saveTR(); idbDel(ds.id); if (AUD.aid === ds.id) audioUnload(); closeSheet(); render(); toast("已删除导入的全文"); } else { t.dataset.armed = 1; t.textContent = "再点一次确认删除"; } break;
+    case "startfull": closeModal(); if (ds.id !== READ_ID || VIEW !== "read") openRead(ds.id); else setMod(ds.id, 1); break;
+    case "mod": setMod(READ_ID, +ds.i); break;
+    case "playmod": case "playpara": closeSheet(); if (TR[READ_ID] && TR[READ_ID].audio) playAt(READ_ID, +ds.g); else audioPanel(READ_ID); break;
+    case "audiopanel": closeSheet(); audioPanel(VIEW === "practice" ? PR_ID : READ_ID); break;
+    case "audiodel": if (t.dataset.armed) { closeSheet(); removeAudio(ds.id); toast("音频已删除"); } else { t.dataset.armed = 1; t.textContent = "再点一次确认"; } break;
+    case "embed": { const box = $("#embedbox"); if (box) box.innerHTML = `<div class="embed"><iframe src="https://embed.ted.com/talks/${encodeURIComponent(ds.slug)}" allow="autoplay; fullscreen; encrypted-media" allowfullscreen loading="lazy" title="TED 官方播放器"></iframe></div>`; break; }
+    case "segplay": playAt(READ_ID || PR_ID, +ds.g, { seg: true }); break;
+    case "loopsent": { const id = READ_ID; playAt(id, +ds.g); AUD.loop = +ds.g; drawBar(); toast("单句循环中，点播放条上的「单句循环」取消"); break; }
+    case "calib": calibrateHere(READ_ID, +ds.g); break;
+    case "ab-play": if (AUD.el) { if (AUD.el.paused) AUD.el.play().catch(() => {}); else AUD.el.pause(); } break;
+    case "ab-seek": if (AUD.el) { AUD.el.currentTime = Math.max(0, AUD.el.currentTime + +ds.d); tick(); } break;
+    case "ab-rate": { const R2 = [0.75, 0.85, 1, 1.15, 1.25]; AUD.rate = R2[(R2.indexOf(AUD.rate) + 1) % R2.length]; if (AUD.el) AUD.el.playbackRate = AUD.rate; drawBar(); break; }
+    case "ab-loop": AUD.loop = AUD.loop != null ? null : Math.max(0, AUD.last); drawBar(); break;
+    case "ab-follow": AUD.follow = !AUD.follow; drawBar(); break;
+    case "ab-close": if (AUD.el) AUD.el.pause(); AUD.bar = false; AUD.loop = null; drawBar(); break;
+    case "prsrc": PR_SRC = ds.x; PR_SI = 0; stopSpeak(); render(); break;
     case "reset1": if (!resetArmed) { resetArmed = true; t.textContent = "再点一次确认"; setTimeout(() => { resetArmed = false; if (t.isConnected) t.textContent = "重置"; }, 3000); } else { const set = S.set; S = freshState(); S.set = set; VOC = {}; SEN = {}; AIC = {}; LS.set("voc", VOC); LS.set("sen", SEN); LS.set("ai", AIC); save(); if (Cloud.db) toast("已重置（云端旧单词记录会在下次覆盖）"); resetArmed = false; go("home"); } break;
   }
 });
@@ -1188,7 +1819,8 @@ document.addEventListener("change", e => {
   if (e.target.id === "bkfile") { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ""; return; }
   if (e.target.id === "nmin") { S.set.name = e.target.value.trim().slice(0, 20); save(); toast("已保存"); return; }
   if (e.target.id === "aiprov") { const p = AI_PRESETS[e.target.value]; $("#aibase").value = p[2]; $("#aimodel").value = p[3]; return; }
-  if (e.target.id === "prsel") { PR_ID = e.target.value; PR_SI = 0; stopSpeak(); render(); } if (e.target.id === "fsr") { S.set.fs = +e.target.value; save(); } });
+  if (e.target.id === "prsel") { PR_ID = e.target.value; PR_SI = 0; PR_SRC = null; stopSpeak(); render(); }
+  if (e.target.dataset && e.target.dataset.aud) { const f = e.target.files[0]; const id = e.target.dataset.aud; closeSheet(); if (f) importAudio(id, f); return; } if (e.target.id === "fsr") { S.set.fs = +e.target.value; save(); } });
 document.addEventListener("input", e => { if (e.target.id === "fsr") { S.set.fs = +e.target.value; $("#fsv").textContent = S.set.fs + "px"; applySettings(); } if (e.target.dataset.qi && QZ) QZ.ans[+e.target.dataset.qi] = e.target.value; });
 document.addEventListener("keydown", e => { if (e.key === "Escape") { closeSheet(); closeMenus(); closeModal(); } });
 window.addEventListener("resize", () => { if (!LS.get("screen")) { const before = document.documentElement.dataset.mode; screenMode(); if (before !== document.documentElement.dataset.mode) render(); } });
