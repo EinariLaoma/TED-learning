@@ -554,3 +554,15 @@ html.sidecol .sideimp{justify-content:center;padding:10px 0}html.sidecol .sideim
 @media (max-width:560px){.impick{grid-template-columns:1fr 1fr}.impick .pickbig:first-child{grid-column:1/-1;flex-direction:row;justify-content:center;gap:12px;padding:14px}.impick .pickbig:first-child .ib{margin:0}.rec{flex-wrap:wrap}.rec .row{width:100%;justify-content:flex-end}.kv4 b{font-size:17px}}
 .fld .txt{width:100%;max-width:none}
 .acard.wide{min-height:0}
+.zlist{display:flex;flex-direction:column;gap:6px}
+.zi{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;background:var(--soft);font-weight:400}
+.zic{width:30px;height:30px;flex:none;border-radius:9px;background:var(--card);color:var(--accent);display:grid;place-items:center}.zic svg{width:17px;height:17px}
+.zt{flex:1;min-width:0}.zt b{display:block;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.zt span{font-size:11.5px;color:var(--muted)}
+.zi .tag{flex:none}.za{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex:none}.za .linkbtn{font-size:12px;white-space:nowrap}
+.fileb svg{width:16px;height:16px}
+body.dragging #view::after{content:"松开即可导入";position:fixed;inset:12px;border:2px dashed var(--accent);border-radius:20px;background:color-mix(in srgb,var(--accent) 10%,transparent);display:grid;place-items:center;font-size:20px;font-weight:700;color:var(--accent);z-index:50;pointer-events:none}
+html[data-mode="S"] .dropnote{display:none}
+@media (max-width:560px){.zi{flex-wrap:wrap}.za{flex-direction:row;gap:10px;width:100%;justify-content:flex-end}}
+.pickbig b{white-space:nowrap}
+@media (max-width:560px){.impick .pickbig:first-child span{flex:1;text-align:left}}
+.tag.off{background:var(--soft);color:var(--muted)}

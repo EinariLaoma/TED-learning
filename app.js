@@ -1337,7 +1337,7 @@ async function idbGet(k) { const db = await idb(); return new Promise((res, rej)
 async function idbDel(k) { const db = await idb(); return new Promise(res => { const tx = db.transaction("audio", "readwrite"); tx.objectStore("audio").delete(k); tx.oncomplete = res; tx.onerror = res; }); }
 async function importAudio(aid, file) {
   if (!file) return;
-  if (!/^(audio|video)\//.test(file.type) && !/\.(mp3|m4a|aac|wav|ogg|opus|mp4|m4v|webm|mov)$/i.test(file.name)) { toast("请选择音频或视频文件"); return; }
+  { const c = audioCheck(file); if (!c.ok) { toast(c.msg); return; } }
   try {
     await idbPut(aid, { blob: file, name: file.name, type: file.type || "audio/mpeg" });
     TR[aid].audio = { name: file.name, type: file.type, size: file.size }; TR[aid].cal = []; TR[aid].off = 0; saveTR();
@@ -1894,7 +1894,7 @@ function itemDelete(id) {
 }
 
 /* ---------- import: files, paste, TED transcripts ---------- */
-const IMP_ACCEPT = ".txt,.md,.text,.srt,.vtt,.pdf,.docx,.doc,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
 const AUD_ACCEPT = "audio/*,video/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.oga,.opus,.webm,.mp4,.m4v,.mov,.3gp,.amr,.wma,.aif,.aiff,.caf";
 const AUD_TYPES = { mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", wav: "audio/wav", flac: "audio/flac", ogg: "audio/ogg", oga: "audio/ogg", opus: 'audio/ogg; codecs="opus"', webm: "audio/webm", mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", "3gp": "video/3gpp", amr: "audio/amr", wma: "audio/x-ms-wma", aif: "audio/aiff", aiff: "audio/aiff", caf: "audio/x-caf" };
 function audioCheck(file) {
@@ -1905,7 +1905,7 @@ function audioCheck(file) {
   return { ok: true, warn: can === "" ? `当前设备可能无法播放 .${ext} 格式（例如 iPhone 不支持 WMA、AMR，部分设备不支持 OGG）。如果播放不了，请转成 MP3 或 M4A 再导入。` : "" };
 }
 let IMP = {};
-function impReset(pre) { IMP = Object.assign({ mode: null, raw: null, kind: null, paras: null, title: "", cat: "其他", src: "", speaker: "", zhRaw: "", zhMode: "none", audio: null, err: "", warn: "", busy: false, name: "", pasteText: "", zhPasting: false }, pre || {}); }
+function impReset(pre) { IMP = Object.assign({ mode: null, raw: null, kind: null, paras: null, title: "", cat: "其他", src: "", speaker: "", zhRaw: "", zhMode: "none", audio: null, err: "", warn: "", busy: false, name: "", pasteText: "", zhPasting: false, files: null, notes: null, zipName: "", zipFolder: "", audioOnly: false, zhRawManual: "" }, pre || {}); }
 impReset();
 function decodeText(buf) {
   const u = new Uint8Array(buf);
@@ -1947,17 +1947,7 @@ async function pdfText(file) {
     prev = l; }); });
   return out.join("\n");
 }
-async function extractFile(file) {
-  const ext = (file.name.split(".").pop() || "").toLowerCase();
-  if (ext === "pdf" || file.type === "application/pdf") return { kind: "text", text: await pdfText(file) };
-  if (ext === "docx") return { kind: "text", text: await docxText(file) };
-  if (ext === "doc") throw new Error("暂不支持旧版 .doc 文件，请在 Word / WPS 里另存为 .docx 或 PDF 后再导入。");
-  if (["pages", "rtf", "epub", "mobi", "key", "ppt", "pptx", "xls", "xlsx"].includes(ext)) throw new Error("暂不支持 ." + ext + "，请导出为 PDF、Word（.docx）或 TXT 后再导入。");
-  if (file.size > 20 * 1048576) throw new Error("文件太大（超过 20 MB）");
-  const t = decodeText(await file.arrayBuffer());
-  if (/\u0000/.test(t.slice(0, 2000))) throw new Error("无法识别的文件类型，请导入 TXT、PDF、Word（.docx）或字幕文件。");
-  return { kind: ext === "srt" || ext === "vtt" || /^\s*(WEBVTT|\d+\s*\n\s*\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->)/.test(t.slice(0, 400)) ? "sub" : "text", text: t };
-}
+
 function joinWrapped(text) {
   const blocks = text.replace(/\r/g, "").split(/\n\s*\n/);
   const multi = blocks.filter(b => b.trim().split("\n").length > 1).length;
@@ -2040,13 +2030,7 @@ function pickQuote(T) {
 }
 function impPrep() { IMP.paras = normParas(toParas(IMP.raw, IMP.kind)); if (!IMP.paras.length) throw new Error("没有识别到英文内容。如果是扫描版 PDF（图片），需要先转成文字。");
   const h = IMP.paras[0]; if (IMP.paras.length > 2 && h.s.length === 1 && h.t == null && !h.zh && h.s[0].split(/\s+/).length <= 14 && !/[.!?;:,"”]$/.test(h.s[0])) { IMP.paras.shift(); if (!IMP.titleLocked) IMP.title = h.s[0]; } IMP._zhInline = IMP.paras.some(p => p.zh); IMP.paras.forEach(p => { if (p.zh) p._zhInline = 1; }); IMP.zhMode = IMP._zhInline ? "inline" : "none"; if (IMP.zhRaw) IMP.zhMode = alignZh(IMP.paras, IMP.zhRaw); }
-async function impFromFile(file) {
-  const keep = { title: IMP.title, src: IMP.src, cat: IMP.cat, speaker: IMP.speaker, titleLocked: IMP.titleLocked };
-  impReset(Object.assign({}, IMP.title ? keep : {}, { name: file.name, busy: true })); render();
-  try { await ensureFull(); const r = await extractFile(file); IMP.kind = r.kind; IMP.raw = r.text; if (!IMP.title) IMP.title = guessTitle(file.name, r.text); impPrep(); }
-  catch (e) { IMP.err = (e && e.message) || "无法读取这个文件"; IMP.paras = null; }
-  IMP.busy = false; render(); setTimeout(() => { const el = $("#s-prev") || $("#imperr"); if (el) el.scrollIntoView({ behavior: S.set.motion ? "smooth" : "auto", block: "start" }); }, 60);
-}
+
 async function impFromPaste() {
   const ta = $("#imptext"); const text = ta ? ta.value : IMP.pasteText; IMP.pasteText = text;
   if (!text || text.trim().split(/\s+/).length < 30) { IMP.err = "内容太短了，请粘贴完整的英文文本（至少几段）。"; render(); return; }
@@ -2055,7 +2039,7 @@ async function impFromPaste() {
   catch (e) { IMP.err = (e && e.message) || "识别失败"; IMP.paras = null; }
   IMP.busy = false; render(); setTimeout(() => { const el = $("#s-prev"); if (el) el.scrollIntoView({ behavior: S.set.motion ? "smooth" : "auto", block: "start" }); }, 60);
 }
-async function impZh(text) { if (!IMP.paras) return; IMP.zhRaw = text; IMP.zhMode = alignZh(IMP.paras, text); IMP.zhPasting = false; render(); toast(IMP.zhMode === "none" ? "没有识别到中文内容" : "已添加中文译文"); }
+async function impZh(text) { if (!IMP.paras) return; IMP.zhRaw = IMP.zhRawManual = text; (IMP.files || []).forEach(o => { if (o.role === "zh") o.role = "none"; }); IMP.zhMode = alignZh(IMP.paras, text); IMP.zhPasting = false; render(); toast(IMP.zhMode === "none" ? "没有识别到中文内容" : "已添加中文译文"); }
 function importSheet(aid) {
   const a = AMAP[aid];
   impReset(a && !a.user ? { mode: "paste", titleLocked: true, title: a.ted.title, src: a.ted.url, cat: a.cat, speaker: a.ted.speaker } : { mode: "paste" });
@@ -2081,29 +2065,14 @@ async function impSave(push) {
   }
   setPush(id); toast("已生成本周精读推送"); openRead(id);
 }
-function vImp() {
-  if (!FULL) return `<div class="empty">导入功能需要在 App 版中使用。</div>`;
-  const P = IMP;
-  const pickers = `<div class="impick">
-    <label class="pickbig"><input type="file" id="impfile" accept="${IMP_ACCEPT}"><span class="ib">${I.doc}</span><b>选择文件</b><span>TXT · PDF · Word · 字幕</span></label>
-    <button class="pickbig ${P.mode === "paste" ? "on" : ""}" data-act="impmode" data-x="paste"><span class="ib">${I.paste}</span><b>粘贴文本</b><span>从网页或其他 App 复制</span></button>
-    <button class="pickbig ${P.mode === "rec" ? "on" : ""}" data-act="impmode" data-x="rec"><span class="ib">${I.globe}</span><b>TED 讲稿</b><span>20 场推荐演讲</span></button></div>`;
-  let mid = "";
-  if (P.mode === "paste") mid = `<div class="panel"><label class="imlab" for="imptext">粘贴英文内容${P.title && P.src ? "：" + esc(P.title) : ""}<button class="btn sm ghost" data-act="paste" data-to="imptext">粘贴</button></label>
-    <textarea id="imptext" class="imta" placeholder="00:12&#10;Paste English text here. Chinese lines and timestamps are recognised automatically…" spellcheck="false">${esc(P.pasteText)}</textarea>
-    <div class="row" style="justify-content:space-between;margin-top:8px">${P.src ? `<a class="btn sm ghost" href="${esc(P.src)}/transcript?language=en" target="_blank" rel="noopener">打开 TED 讲稿</a>` : "<span></span>"}<button class="btn" data-act="impparse">识别内容</button></div></div>`;
-  if (P.mode === "rec") mid = `<div class="panel"><div class="muted" style="font-size:13px;margin-bottom:8px">点「讲稿」在 TED 官网全选复制，回来点「粘贴导入」。标题、分类和链接会自动填好。</div>${recList("粘贴导入")}</div>`;
-  const status = P.busy ? `<div class="note" style="background:var(--soft);margin-top:12px">正在识别内容…</div>` : P.err ? `<div class="note" id="imperr" style="background:color-mix(in srgb,var(--rose) 14%,transparent);margin-top:12px">${esc(P.err)}</div>` : "";
-  return `<div class="sechead"><h2>导入内容</h2></div>
-  <p class="muted" style="margin-top:-4px;font-size:13px">导入英文材料，一键生成精读推送。支持 TXT、PDF、Word（.docx）、字幕（SRT / VTT），也可以直接粘贴。中英对照的内容会自动拆开，讲稿里的时间戳会用来对齐音频。导入的内容只保存在这台设备上。</p>
-  ${pickers}${mid}${status}${P.paras && !P.busy ? impPreview() : ""}`;
-}
+
 function impPreview() {
   const P = IMP, words = P.paras.reduce((n, p) => n + p.s.join(" ").split(/\s+/).length, 0), ns = P.paras.reduce((n, p) => n + p.s.length, 0);
   const ts = P.paras.filter(p => p.t != null).length, zh = P.paras.filter(p => p.zh).length, mods = estMods(P.paras);
-  return `<div class="panel impprev" id="s-prev"><div class="sechead" style="margin:0 0 10px"><h3>预览与设置</h3><span class="muted" style="font-size:12px">${esc(P.name || "")}</span></div>
+  return `<div class="panel impprev" id="s-prev"><div class="sechead" style="margin:0 0 10px"><h3>预览与设置</h3><span class="muted" style="font-size:12px">${esc(P.name || "")} · <button class="linkbtn" data-act="impclear">重新选择</button></span></div>
   <div class="kv4"><div><b class="num">${words}</b><span>词</span></div><div><b class="num">${ns}</b><span>句</span></div><div><b class="num">${mods}</b><span>个部分</span></div><div><b class="num">${ts}</b><span>时间戳</span></div></div>
   ${words < 150 ? `<div class="note">内容比较短（${words} 词），也可以导入，但只会生成 1 个部分。</div>` : ""}
+  ${impFilesHTML()}
   <label class="fld">标题<input type="text" id="imptitle" class="txt" value="${esc(P.title)}" maxlength="80"></label>
   <div class="fld"><span>分类</span><div class="topics">${CAT_ALL.map(c => `<button class="topic ${P.cat === c ? "on" : ""}" data-act="impcat" data-c="${c}">${c}</button>`).join("")}</div></div>
   <label class="fld">来源链接（可选）<input type="url" id="impsrc" class="txt" value="${esc(P.src)}" placeholder="https://www.ted.com/talks/…" spellcheck="false" autocomplete="off"></label>
@@ -2115,6 +2084,205 @@ function impPreview() {
     <div class="faint" style="font-size:11.5px">支持 MP3、M4A、AAC、WAV、FLAC、MP4、MOV 等；OGG / OPUS / WEBM 视设备而定，WMA、AMR 在 iPhone 上无法播放。</div>${P.warn ? `<div class="note">${esc(P.warn)}</div>` : ""}</div>
   <div class="prevtext">${P.paras.slice(0, 3).map(p => `<p>${p.t != null ? `<span class="pstamp num">${fmtT(p.t)}</span> ` : ""}${esc(p.s.join(" "))}</p>${p.zh ? `<p class="zh">${esc(p.zh)}</p>` : ""}`).join("")}${P.paras.length > 3 ? `<p class="faint">…… 共 ${P.paras.length} 段</p>` : ""}</div>
   <div class="impacts"><button class="btn ghost" data-act="impsave" data-push="0">仅加入精读库</button><button class="btn" data-act="impsave" data-push="1">${I.spark}生成精读推送</button></div></div>`;
+}
+
+/* ---------- v1.4: ZIP packages, HTML text, multi-file import ---------- */
+const IMP_ACCEPT = ".zip,.txt,.md,.text,.html,.htm,.xhtml,.srt,.vtt,.pdf,.docx,.doc,text/plain,text/html,application/zip,application/x-zip-compressed,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const TEXT_EXT = new Set(["txt", "md", "text", "html", "htm", "xhtml", "srt", "vtt", "pdf", "docx", "doc"]);
+const extOf = n => ((n || "").split("/").pop().split(".").pop() || "").toLowerCase();
+const isAudioName = (n, type) => /^(audio|video)\//.test(type || "") || !!AUD_TYPES[extOf(n)];
+function decodeName(b) { try { return new TextDecoder("utf-8", { fatal: true }).decode(b); } catch (e) { try { return new TextDecoder("gb18030").decode(b); } catch (e2) { return new TextDecoder().decode(b); } } }
+async function unzipFile(file) {
+  const buf = new Uint8Array(await file.arrayBuffer()), dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let e = -1; for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  if (e < 0) throw new Error("这不是有效的 ZIP 压缩包（也可能是 RAR / 7z，请改用 ZIP 格式压缩）");
+  let n = dv.getUint16(e + 10, true), cd = dv.getUint32(e + 16, true);
+  if ((cd === 0xFFFFFFFF || n === 0xFFFF) && e >= 20 && dv.getUint32(e - 20, true) === 0x07064b50) { const z = Number(dv.getBigUint64(e - 12, true)); n = Number(dv.getBigUint64(z + 32, true)); cd = Number(dv.getBigUint64(z + 48, true)); }
+  const ents = []; let p = cd;
+  for (let k = 0; k < n && p + 46 <= buf.length; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const flag = dv.getUint16(p + 8, true), method = dv.getUint16(p + 10, true);
+    let cs = dv.getUint32(p + 20, true), us = dv.getUint32(p + 24, true), lo = dv.getUint32(p + 42, true);
+    const fl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true);
+    const nb = buf.subarray(p + 46, p + 46 + fl);
+    if (cs === 0xFFFFFFFF || us === 0xFFFFFFFF || lo === 0xFFFFFFFF) {
+      let q = p + 46 + fl; const qe = q + xl;
+      while (q + 4 <= qe) { const id = dv.getUint16(q, true), sz = dv.getUint16(q + 2, true); if (id === 1) { let r = q + 4; if (us === 0xFFFFFFFF) { us = Number(dv.getBigUint64(r, true)); r += 8; } if (cs === 0xFFFFFFFF) { cs = Number(dv.getBigUint64(r, true)); r += 8; } if (lo === 0xFFFFFFFF) lo = Number(dv.getBigUint64(r, true)); } q += 4 + sz; }
+    }
+    p += 46 + fl + xl + cl;
+    const name = flag & 0x800 ? new TextDecoder().decode(nb) : decodeName(nb);
+    if (/\/$/.test(name) || /(^|\/)(__MACOSX|\.DS_Store|Thumbs\.db|desktop\.ini)(\/|$)/i.test(name) || /(^|\/)\._/.test(name)) continue;
+    const ds = lo + 30 + dv.getUint16(lo + 26, true) + dv.getUint16(lo + 28, true);
+    ents.push({ name, method, enc: flag & 1, data: buf.subarray(ds, ds + cs), us });
+  }
+  if (!ents.length) throw new Error("压缩包是空的");
+  if (ents.some(x => x.enc)) throw new Error("压缩包设置了密码，无法读取，请去掉密码后重新压缩");
+  const want = ents.filter(x => TEXT_EXT.has(extOf(x.name)) || isAudioName(x.name) || extOf(x.name) === "zip");
+  const skipped = ents.filter(x => !want.includes(x)).map(x => x.name.split("/").pop());
+  const files = []; let cfb = null;
+  for (const x of want) {
+    let bytes = null;
+    if (x.method === 0) bytes = x.data;
+    else if (x.method === 8 && typeof DecompressionStream === "function") { try { bytes = new Uint8Array(await new Response(new Blob([x.data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer()); } catch (er) { bytes = null; } }
+    if (!bytes) {
+      if (!cfb) { await loadLib("xlsx"); cfb = XLSX.CFB.read(buf, { type: "array" }); }
+      const base = x.name.split("/").pop(); const i = cfb.FullPaths.findIndex(fp => fp.endsWith("/" + x.name) || fp.split("/").pop() === base);
+      if (i < 0 || !cfb.FileIndex[i].content) { skipped.push(base + "（无法解压）"); continue; }
+      bytes = cfb.FileIndex[i].content instanceof Uint8Array ? cfb.FileIndex[i].content : new Uint8Array(cfb.FileIndex[i].content);
+    }
+    const base = x.name.split("/").pop(), ext = extOf(base);
+    files.push(new File([bytes], base, { type: AUD_TYPES[ext] || (ext === "html" || ext === "htm" ? "text/html" : ext === "pdf" ? "application/pdf" : "") }));
+  }
+  const tops = new Set(want.map(x => x.name.includes("/") ? x.name.split("/")[0] : ""));
+  return { files, skipped, folder: tops.size === 1 ? [...tops][0] : "" };
+}
+function htmlText(src) {
+  const doc = new DOMParser().parseFromString(src, "text/html");
+  let title = ((doc.querySelector('meta[property="og:title"]') || {}).content || (doc.querySelector("title") || {}).textContent || "").trim();
+  const h1 = doc.querySelector("h1"); const h1t = h1 ? h1.textContent.replace(/\s+/g, " ").trim() : "";
+  if (h1t && h1t.length <= 120) title = h1t;
+  title = title.split(/\s+[|｜–—]\s+|\s+-\s+(?=[^-]*$)/)[0].replace(/\s+/g, " ").trim();
+  doc.querySelectorAll("script,style,noscript,template,svg,canvas,iframe,form,button,select,input,nav,header,footer,aside,[hidden],[aria-hidden=true],[role=navigation],[role=banner],[role=contentinfo]").forEach(n => n.remove());
+  const cands = Array.from(doc.querySelectorAll("article,main,[role=main]")).filter(n => n.textContent.trim().length > 400);
+  const root = cands.sort((a, b) => b.textContent.length - a.textContent.length)[0] || doc.body || doc.documentElement;
+  const BLOCK = /^(P|DIV|SECTION|ARTICLE|MAIN|H[1-6]|LI|UL|OL|BLOCKQUOTE|PRE|TR|TD|TH|TABLE|DD|DT|DL|FIGCAPTION|FIGURE|HR|ADDRESS)$/;
+  let out = "";
+  (function walk(n) {
+    for (const c of n.childNodes) {
+      if (c.nodeType === 3) out += c.nodeValue.replace(/\s+/g, " ");
+      else if (c.nodeType === 1) { const t = c.tagName; if (t === "BR") { out += "\n"; continue; } const b = BLOCK.test(t); if (b) out += "\n"; walk(c); if (b) out += "\n"; }
+    }
+  })(root);
+  const lines = out.split("\n").map(l => l.trim()).filter(Boolean);
+  const keep = lines.filter((l, i) => TS_RE.test(l) || cjkRatio(l) > 0.3 || l.split(/\s+/).length >= 5 || /[.!?"”]$/.test(l) || (i > 0 && TS_RE.test(lines[i - 1])));
+  if (keep[0] && h1t && keep[0] === h1t) keep.shift();
+  return { text: keep.join("\n"), title };
+}
+async function extractFile(file) {
+  const ext = extOf(file.name);
+  if (ext === "pdf" || file.type === "application/pdf") return { kind: "text", text: await pdfText(file) };
+  if (ext === "docx") return { kind: "text", text: await docxText(file) };
+  if (ext === "doc") throw new Error("暂不支持旧版 .doc 文件，请在 Word / WPS 里另存为 .docx 或 PDF 后再导入。");
+  if (["pages", "rtf", "epub", "mobi", "key", "ppt", "pptx", "xls", "xlsx", "rar", "7z"].includes(ext)) throw new Error("暂不支持 ." + ext + "，请导出为 ZIP、HTML、PDF、Word（.docx）或 TXT 后再导入。");
+  if (file.size > 40 * 1048576) throw new Error("文件太大（超过 40 MB）");
+  const t = decodeText(await file.arrayBuffer());
+  if (/\u0000/.test(t.slice(0, 2000))) throw new Error("无法识别的文件类型，请导入 ZIP、TXT、HTML、PDF、Word（.docx）或字幕文件。");
+  if (ext === "html" || ext === "htm" || ext === "xhtml" || file.type === "text/html" || /^\s*(<!doctype html|<html[\s>]|<\?xml[^>]*>\s*(<!doctype[^>]*>\s*)?<html)/i.test(t.slice(0, 600))) { const h = htmlText(t); return { kind: "text", text: h.text, title: h.title, html: true }; }
+  return { kind: ext === "srt" || ext === "vtt" || /^\s*(WEBVTT|\d+\s*\n\s*\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->)/.test(t.slice(0, 400)) ? "sub" : "text", text: t };
+}
+function textStats(t) { const en = (t.match(/[A-Za-z]{2,}/g) || []).length, zh = (t.match(/[㐀-鿿]/g) || []).length; const ts = (t.match(/^\s*(\d{1,2}:)?\d{1,2}:\d{2}\b/gm) || []).length + (t.match(/-->/g) || []).length; return { en, zh, ts }; }
+async function expandFiles(list) {
+  const files = [], notes = [];
+  for (const f of list) {
+    if (extOf(f.name) === "zip" || /zip/.test(f.type)) {
+      const r = await unzipFile(f);
+      for (const g of r.files) { if (extOf(g.name) === "zip") { const r2 = await unzipFile(g); files.push(...r2.files.filter(h => extOf(h.name) !== "zip")); r2.skipped.length && notes.push(...r2.skipped); } else files.push(g); }
+      if (r.skipped.length) notes.push(...r.skipped);
+      IMP.zipName = f.name; IMP.zipFolder = r.folder;
+    } else files.push(f);
+  }
+  return { files, notes };
+}
+async function classifyFiles(files) {
+  const out = [];
+  for (const f of files) {
+    const o = { name: f.name, size: f.size, file: f, role: "none", err: "" };
+    if (isAudioName(f.name, f.type)) { o.type = "audio"; const c = audioCheck(f); o.warn = c.warn || ""; }
+    else if (TEXT_EXT.has(extOf(f.name)) || /^text\//.test(f.type)) {
+      o.type = "text";
+      try { const r = await extractFile(f); Object.assign(o, { kind: r.kind, text: r.text, title: r.title || "", html: !!r.html }, textStats(r.text)); }
+      catch (e) { o.err = e.message || "无法读取"; }
+    } else o.type = "other";
+    out.push(o);
+  }
+  const KP = { srt: 1.05, vtt: 1.05, txt: 1.03, md: 1.03, text: 1.03, docx: 1, html: 0.98, htm: 0.98, xhtml: 0.98, pdf: 0.95 };
+  const enC = out.filter(o => o.type === "text" && !o.err && o.en >= 60);
+  const main = enC.sort((a, b) => b.en * (KP[extOf(b.name)] || 1) * (b.ts > 3 ? 1.1 : 1) - a.en * (KP[extOf(a.name)] || 1) * (a.ts > 3 ? 1.1 : 1))[0];
+  if (main) main.role = "en";
+  if (main && main.zh < main.en * 0.5) { const zh = out.filter(o => o.type === "text" && !o.err && o !== main && o.zh >= 80 && o.zh > o.en).sort((a, b) => b.zh - a.zh)[0]; if (zh) zh.role = "zh"; }
+  const base = s => s.replace(/\.[^.]+$/, "").toLowerCase();
+  const auds = out.filter(o => o.type === "audio").sort((a, b) => (main && base(b.name) === base(main.name) ? 1e12 : 0) + b.size - ((main && base(a.name) === base(main.name) ? 1e12 : 0) + a.size));
+  if (auds[0]) auds[0].role = "audio";
+  out.forEach(o => { if (o.type === "text" && !o.err && o.role === "none" && o.en < 60 && o.zh < 80) o.err = "内容太少，未使用"; });
+  return out;
+}
+function impApplyRoles() {
+  const P = IMP, en = P.files.find(o => o.role === "en"), zh = P.files.find(o => o.role === "zh"), au = P.files.find(o => o.role === "audio");
+  P.audio = au ? au.file : (P.files.some(o => o.type === "audio") ? null : P.audio); P.warn = au ? au.warn : "";
+  P.zhRaw = zh ? zh.text : (P.zhRawManual || "");
+  if (!en) { P.paras = null; return; }
+  P.raw = en.text; P.kind = en.kind; P.name = (P.zipName ? P.zipName + " · " : "") + en.name;
+  const htmlT = (en.title || (P.files.find(o => o.html && o.title) || {}).title || "").trim();
+  const nameT = n => { const t = (n || "").replace(/\.[^.]+$/, "").replace(/[_]+/g, " ").trim(); return t.length >= 4 && !/^(document|untitled|新建|文档|transcript|audio|text|en|english|pack|archive|压缩包|\d+)( ?(en|english|txt|\d+))?$/i.test(t) ? t : ""; };
+  if (!P.titleLocked) P.title = htmlT || nameT(P.zipFolder) || nameT(P.zipName) || guessTitle(en.name, en.text);
+  impPrep();
+  if (htmlT && !P.titleLocked) P.title = htmlT;
+}
+async function impFromFiles(list) {
+  list = Array.from(list || []); if (!list.length) return;
+  const onlyAudio = list.every(f => isAudioName(f.name, f.type));
+  if (onlyAudio && IMP.paras) { const f = list[0], c = audioCheck(f); if (!c.ok) { toast(c.msg); return; } impKeepFields(); IMP.audio = f; IMP.warn = c.warn; (IMP.files || []).forEach(o => { if (o.role === "audio") o.role = "none"; }); render(); toast("已添加音频：" + f.name); return; }
+  const keep = { title: IMP.title, src: IMP.src, cat: IMP.cat, speaker: IMP.speaker, titleLocked: IMP.titleLocked };
+  impReset(Object.assign({}, IMP.titleLocked ? keep : { cat: IMP.cat }, { busy: true, name: list.map(f => f.name).join("、") })); render();
+  try {
+    await ensureFull();
+    const ex = await expandFiles(list); IMP.notes = ex.notes;
+    IMP.files = await classifyFiles(ex.files);
+    if (!IMP.files.some(o => o.role === "en")) {
+      const au = IMP.files.find(o => o.role === "audio");
+      if (au) { IMP.audio = au.file; IMP.warn = au.warn; IMP.audioOnly = true; }
+      else { const er = IMP.files.find(o => o.err); throw new Error(er && IMP.files.length === 1 ? er.err : "没有找到英文原文。" + (IMP.files.length > 1 ? "压缩包里的文件：" + IMP.files.map(o => o.name).join("、") : "") + "。支持 TXT、HTML、PDF、Word（.docx）、字幕。"); }
+    } else impApplyRoles();
+  } catch (e) { IMP.err = (e && e.message) || "无法读取这个文件"; IMP.paras = null; }
+  IMP.busy = false; render(); setTimeout(() => { const el = $("#s-prev") || $("#imperr") || $("#s-aud"); if (el) el.scrollIntoView({ behavior: S.set.motion ? "smooth" : "auto", block: "start" }); }, 60);
+}
+async function impFromFile(file) { return impFromFiles([file]); }
+function impKeepFields() { const ti = $("#imptitle"), sr = $("#impsrc"); if (ti) IMP.title = ti.value; if (sr) IMP.src = sr.value; }
+function impSetRole(i, role) {
+  impKeepFields(); const o = IMP.files[i]; if (!o) return;
+  if (role === "none") o.role = "none"; else { IMP.files.forEach(x => { if (x.role === role) x.role = "none"; }); o.role = role; }
+  if (role === "zh") IMP.zhRawManual = "";
+  try { impApplyRoles(); IMP.err = ""; } catch (e) { IMP.err = e.message; }
+  render();
+}
+function impFilesHTML() {
+  const P = IMP; if (!P.files || P.files.length < 2 && !P.notes) return "";
+  const RN = { en: ["英文原文", "g"], zh: ["中文译文", ""], audio: ["音频", ""], none: ["未使用", "off"] };
+  const sz = b => b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+  return `<div class="fld"><span>${P.zipName ? "压缩包内容 · " + esc(P.zipName) : "已选择的文件"} <em class="muted">${P.files.length} 个文件，自动识别了用途，可以改</em></span>
+  <div class="zlist">${P.files.map((o, i) => {
+    const r = RN[o.role] || RN.none;
+    const acts = o.type === "text" && !o.err ? [o.role !== "en" && o.en >= 30 ? `<button class="linkbtn" data-act="improle" data-i="${i}" data-r="en">设为原文</button>` : "", o.role !== "zh" && o.zh >= 30 ? `<button class="linkbtn" data-act="improle" data-i="${i}" data-r="zh">设为译文</button>` : "", o.role === "zh" ? `<button class="linkbtn" data-act="improle" data-i="${i}" data-r="none">不用</button>` : ""]
+      : o.type === "audio" ? [o.role !== "audio" ? `<button class="linkbtn" data-act="improle" data-i="${i}" data-r="audio">用这个音频</button>` : `<button class="linkbtn" data-act="improle" data-i="${i}" data-r="none">不用</button>`] : [];
+    const info = o.type === "text" ? (o.err ? esc(o.err) : `${o.html ? "HTML · " : ""}${o.en} 英文词${o.zh > 30 ? " · " + o.zh + " 汉字" : ""}${o.ts ? " · " + o.ts + " 个时间戳" : ""}`) : o.type === "audio" ? sz(o.size) + (o.warn ? " · 本机可能无法播放" : "") : "不支持的类型";
+    return `<div class="zi"><span class="zic">${o.type === "audio" ? I.ear : I.doc}</span><div class="zt"><b>${esc(o.name)}</b><span>${info}</span></div><span class="tag ${r[1]}">${r[0]}</span><span class="za">${acts.join("")}</span></div>`;
+  }).join("")}</div>${P.notes && P.notes.length ? `<div class="faint" style="font-size:11.5px">已忽略：${esc(P.notes.slice(0, 8).join("、"))}${P.notes.length > 8 ? " 等 " + P.notes.length + " 个" : ""}</div>` : ""}</div>`;
+}
+function impAudioOnlyHTML() {
+  const P = IMP; if (!P.audioOnly || !P.audio || P.paras) return "";
+  const noAud = Object.values(ITEMS).filter(m => !(TR[m.id] && TR[m.id].audio)).sort((a, b) => b.at - a.at);
+  return `<div class="panel impprev" id="s-aud"><div class="sechead" style="margin:0 0 8px"><h3>已选择音频</h3><span class="muted" style="font-size:12px">${esc(P.audio.name)} · ${(P.audio.size / 1048576).toFixed(1)} MB</span></div>
+  <p class="muted" style="font-size:13px;margin:0 0 10px">接下来二选一：再选英文原文，和这个音频一起生成新的精读；或者把它添加到精读库里已有的一篇。</p>
+  ${P.warn ? `<div class="note">${esc(P.warn)}</div>` : ""}
+  <div class="row"><label class="btn fileb">${I.doc}选择英文原文<input type="file" id="imptextfor" accept="${IMP_ACCEPT}"></label><button class="btn ghost" data-act="impmode" data-x="paste" data-keepaud="1">${I.paste}粘贴英文原文</button></div>
+  ${noAud.length ? `<div class="fld"><span>添加到已有精读</span><div class="topics">${noAud.slice(0, 12).map(m => `<button class="topic" data-act="audtoitem" data-id="${m.id}">${esc(m.title)}</button>`).join("")}</div></div>` : ""}</div>`;
+}
+function vImp() {
+  if (!FULL) return `<div class="empty">导入功能需要在 App 版中使用。</div>`;
+  const P = IMP;
+  const pickers = `<div class="impick">
+    <label class="pickbig"><input type="file" id="impfile" accept="${IMP_ACCEPT},${AUD_ACCEPT}" multiple><span class="ib">${I.doc}</span><b>选择文件</b><span>ZIP · TXT · HTML · PDF · Word · 字幕 · 音频，可多选</span></label>
+    <button class="pickbig ${P.mode === "paste" ? "on" : ""}" data-act="impmode" data-x="paste"><span class="ib">${I.paste}</span><b>粘贴文本</b><span>从网页或其他 App 复制</span></button>
+    <button class="pickbig ${P.mode === "rec" ? "on" : ""}" data-act="impmode" data-x="rec"><span class="ib">${I.globe}</span><b>TED 讲稿</b><span>20 场推荐演讲</span></button></div>`;
+  let mid = "";
+  if (P.mode === "paste") mid = `<div class="panel"><label class="imlab" for="imptext">粘贴英文内容${P.title && P.src ? "：" + esc(P.title) : ""}<button class="btn sm ghost" data-act="paste" data-to="imptext">粘贴</button></label>
+    <textarea id="imptext" class="imta" placeholder="00:12&#10;Paste English text here. Chinese lines and timestamps are recognised automatically…" spellcheck="false">${esc(P.pasteText)}</textarea>
+    <div class="row" style="justify-content:space-between;margin-top:8px">${P.src ? `<a class="btn sm ghost" href="${esc(P.src)}/transcript?language=en" target="_blank" rel="noopener">打开 TED 讲稿</a>` : "<span></span>"}<button class="btn" data-act="impparse">识别内容</button></div></div>`;
+  if (P.mode === "rec") mid = `<div class="panel"><div class="muted" style="font-size:13px;margin-bottom:8px">点「讲稿」在 TED 官网全选复制，回来点「粘贴导入」。标题、分类和链接会自动填好。</div>${recList("粘贴导入")}</div>`;
+  const status = P.busy ? `<div class="note" style="background:var(--soft);margin-top:12px">正在解压和识别内容…</div>` : P.err ? `<div class="note" id="imperr" style="background:color-mix(in srgb,var(--rose) 14%,transparent);margin-top:12px">${esc(P.err)}</div>` : "";
+  return `<div class="sechead"><h2>导入内容</h2></div>
+  <p class="muted" style="margin-top:-4px;font-size:13px">导入英文材料，一键生成精读推送。可以直接选一个 <b>ZIP 压缩包</b>（里面放英文原文、中文译文、MP3 音频，会自动识别），也可以单独选文本或音频，或一次多选几个文件。文本支持 TXT、HTML、PDF、Word（.docx）、字幕（SRT / VTT）。导入的内容只保存在这台设备上。</p>
+  ${pickers}<div class="faint dropnote" style="font-size:12px;margin:-4px 0 8px">电脑上也可以把文件直接拖到这个页面。</div>${mid}${status}${!P.busy ? impAudioOnlyHTML() : ""}${P.paras && !P.busy ? impPreview() : ""}`;
 }
 
 /* ---------- events ---------- */
@@ -2138,8 +2306,11 @@ document.addEventListener("click", e => {
     case "roll-imp": resolveRoll("imp"); break;
     case "itemdel": if (t.dataset.armed) { const id = ds.id; itemDelete(id); toast("已删除"); go("jing"); } else { t.dataset.armed = 1; t.textContent = "再点一次确认删除（进度和音频一起删除）"; } break;
     case "imprec": importSheet(ds.id); break;
-    case "impmode": { const nm = IMP.mode === ds.x ? null : ds.x; if (!IMP.titleLocked) impReset({ mode: nm }); else IMP.mode = nm; } render(); if (IMP.mode === "paste") setTimeout(() => { const ta = $("#imptext"); if (ta) ta.scrollIntoView({ block: "center" }); }, 40); break;
+    case "impmode": { const nm = ds.keepaud ? ds.x : IMP.mode === ds.x ? null : ds.x; if (ds.keepaud) { IMP.mode = nm; IMP.audioOnly = false; } else if (!IMP.titleLocked) impReset({ mode: nm }); else IMP.mode = nm; } render(); if (IMP.mode === "paste") setTimeout(() => { const ta = $("#imptext"); if (ta) ta.scrollIntoView({ block: "center" }); }, 40); break;
     case "impparse": impFromPaste(); break;
+    case "impclear": impReset(); render(); window.scrollTo(0, 0); break;
+    case "improle": impSetRole(+ds.i, ds.r); break;
+    case "audtoitem": { const f = IMP.audio, id = ds.id; if (!f || !ITEMS[id]) break; impReset(); importAudio(id, f).then(() => openRead(id)); break; }
     case "impcat": IMP.cat = ds.c; { const ti = $("#imptitle"), sr = $("#impsrc"); if (ti) IMP.title = ti.value; if (sr) IMP.src = sr.value; } $$("[data-act=impcat]").forEach(b => b.classList.toggle("on", b.dataset.c === ds.c)); break;
     case "impzhpaste": { const ti = $("#imptitle"), sr = $("#impsrc"); if (ti) IMP.title = ti.value; if (sr) IMP.src = sr.value; IMP.zhPasting = !IMP.zhPasting; render(); setTimeout(() => { const z = $("#impzhtext"); if (z) { z.scrollIntoView({ block: "center" }); } }, 40); break; }
     case "impzhok": { const z = $("#impzhtext"); if (z && z.value.trim()) impZh(z.value); break; }
@@ -2227,8 +2398,10 @@ document.addEventListener("click", e => {
 document.addEventListener("pointerdown", onWordDown); document.addEventListener("pointerup", onWordUp); document.addEventListener("pointercancel", onWordUp);
 document.addEventListener("contextmenu", e => { if (e.target.closest(".w")) e.preventDefault(); });
 document.addEventListener("change", e => {
-  if (e.target.id === "impfile") { const f = e.target.files[0]; e.target.value = ""; if (f) impFromFile(f); return; }
+  if (e.target.id === "impfile") { const fs = Array.from(e.target.files); e.target.value = ""; if (fs.length) impFromFiles(fs); return; }
+  if (e.target.id === "imptextfor") { const fs = Array.from(e.target.files); e.target.value = ""; if (fs.length) impFromFiles(IMP.audio ? fs.concat([IMP.audio]) : fs); return; }
   if (e.target.id === "impzhfile") { const f = e.target.files[0]; e.target.value = ""; if (!f) return; const ti = $("#imptitle"), sr = $("#impsrc"); if (ti) IMP.title = ti.value; if (sr) IMP.src = sr.value; extractFile(f).then(r => impZh(r.text)).catch(err => toast(err.message || "无法读取")); return; }
+  if (e.target.id === "impaudio") { (IMP.files || []).forEach(o => { if (o.role === "audio") o.role = "none"; }); }
   if (e.target.id === "impaudio") { const f = e.target.files[0]; e.target.value = ""; if (!f) return; const c = audioCheck(f); if (!c.ok) { toast(c.msg); return; } const ti = $("#imptitle"), sr = $("#impsrc"); if (ti) IMP.title = ti.value; if (sr) IMP.src = sr.value; IMP.audio = f; IMP.warn = c.warn; render(); return; }
   if (e.target.id === "imptitle") { IMP.title = e.target.value; return; }
   if (e.target.id === "bkfile") { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ""; return; }
@@ -2239,6 +2412,9 @@ document.addEventListener("change", e => {
 document.addEventListener("input", e => { if (e.target.id === "fsr") { S.set.fs = +e.target.value; $("#fsv").textContent = S.set.fs + "px"; applySettings(); } if (e.target.dataset.qi && QZ) QZ.ans[+e.target.dataset.qi] = e.target.value; });
 document.addEventListener("keydown", e => { if (e.key === "Escape") { closeSheet(); closeMenus(); closeModal(); } });
 window.addEventListener("resize", () => { if (!LS.get("screen")) { const before = document.documentElement.dataset.mode; screenMode(); if (before !== document.documentElement.dataset.mode) render(); } });
+document.addEventListener("dragover", e => { if (VIEW === "imp" && FULL) { e.preventDefault(); document.body.classList.add("dragging"); } });
+document.addEventListener("dragleave", e => { if (!e.relatedTarget) document.body.classList.remove("dragging"); });
+document.addEventListener("drop", e => { document.body.classList.remove("dragging"); if (VIEW !== "imp" || !FULL) return; e.preventDefault(); const fs = Array.from((e.dataTransfer && e.dataTransfer.files) || []); if (fs.length) impFromFiles(fs); });
 window.addEventListener("hashchange", () => { const h = location.hash.slice(1); if ((VIEWNAMES.has(h) || ALIAS[h]) && h !== VIEW) go(h); });
 
 /* ---------- boot ---------- */
