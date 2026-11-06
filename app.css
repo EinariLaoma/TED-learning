@@ -573,3 +573,12 @@ html.swiping,html.swiping body{-webkit-user-select:none;user-select:none}
 #swipehint svg{width:22px;height:22px}
 #swipehint.ok{background:var(--accent);color:var(--accent-ink)}
 #swipehint.no{color:var(--faint,#999)}
+/* v1.6 smart alignment */
+.alnbox{margin:12px 0;padding:12px 14px;border-radius:14px;background:var(--card);border:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+.alnbox.todo{border-color:color-mix(in srgb,var(--gold) 55%,var(--line));background:color-mix(in srgb,var(--gold) 9%,var(--card))}
+.alnbox.run{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.alnt{display:flex;flex-direction:column;gap:2px}.alnt b{font-size:14px}.alnt span{font-size:12.5px;color:var(--muted);line-height:1.5}
+.alnbox .row{justify-content:space-between;gap:10px;flex-wrap:nowrap}.alnbox .row .btn{flex:none}
+.alnbox .btn svg{width:15px;height:15px}
+.alnbox .bar i{transition:width .4s}
+@media (max-width:560px){.alnbox .row{flex-wrap:wrap}.alnbox .row .btn{margin-left:auto}}

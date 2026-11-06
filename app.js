@@ -1057,7 +1057,12 @@ function parseRaw(raw) {
 }
 const cjkRatio = s => { const t = s.replace(/\s/g, ""); if (!t) return 0; return (t.match(/[㐀-鿿]/g) || []).length / t.length; };
 function splitSents(text) {
-  const arr = window.nlp(text).sentences().out("array").map(x => x.trim()).filter(Boolean);
+  const arr = [];
+  window.nlp(text).sentences().out("array").map(x => x.trim()).filter(Boolean).forEach(x => {
+    let m; while ((m = x.match(/^([\(\[][^)\]]{1,40}[\)\]])\s+(?=\S)/))) { arr.push(m[1]); x = x.slice(m[0].length); }
+    const t = x.match(/^(.*?[.!?"”])\s+([\(\[][^)\]]{1,40}[\)\]])$/); if (t) { arr.push(t[1], t[2]); return; }
+    if (x) arr.push(x);
+  });
   return arr.length ? arr : [text];
 }
 function buildTranscript(enRaw, zhRaw) {
@@ -1102,7 +1107,7 @@ function TX(aid) {
   if (TXC[aid] && TXC[aid].T === T) return TXC[aid];
   const flat = [], pStart = [];
   T.paras.forEach((p, pi) => { pStart.push(flat.length); p.s.forEach(s => flat.push({ p: pi, en: s })); });
-  const mods = T.mods.map(([a, b]) => { const gs = pStart[a], ge = (b + 1 < pStart.length ? pStart[b + 1] : flat.length) - 1; return { a, b, gs, ge, n: ge - gs + 1, words: T.paras.slice(a, b + 1).reduce((n, p) => n + p.s.join(" ").split(/\s+/).length, 0), t0: T.paras[a].t, t1: b + 1 < T.paras.length ? T.paras[b + 1].t : null }; });
+  const mods = T.mods.map(([a, b]) => { const gs = pStart[a], ge = (b + 1 < pStart.length ? pStart[b + 1] : flat.length) - 1; return { a, b, gs, ge, n: ge - gs + 1, words: T.paras.slice(a, b + 1).reduce((n, p) => n + p.s.join(" ").split(/\s+/).length, 0), t0: T.align ? T.align.st[gs] : T.paras[a].t, t1: T.align ? (ge + 1 < flat.length ? T.align.st[ge + 1] : null) : b + 1 < T.paras.length ? T.paras[b + 1].t : null }; });
   const modOf = new Array(flat.length); mods.forEach((m, i) => { for (let g = m.gs; g <= m.ge; g++) modOf[g] = i; });
   return (TXC[aid] = { T, flat, pStart, mods, modOf });
 }
@@ -1340,13 +1345,15 @@ async function importAudio(aid, file) {
   { const c = audioCheck(file); if (!c.ok) { toast(c.msg); return; } }
   try {
     await idbPut(aid, { blob: file, name: file.name, type: file.type || "audio/mpeg" });
-    TR[aid].audio = { name: file.name, type: file.type, size: file.size }; TR[aid].cal = []; TR[aid].off = 0; saveTR();
+    TR[aid].audio = { name: file.name, type: file.type, size: file.size }; TR[aid].cal = []; TR[aid].off = 0; delete TR[aid].align; delete TR[aid].fix; saveTR();
+    await idbDel(aid + "#asr").catch(() => {});
     await audioLoad(aid, true);
-    toast("音频已导入，点任意段落的时间就能从那里播放");
+    toast("音频已导入，正在本机智能对齐，完成后高亮会逐句跟随声音");
+    alnQueue(aid, true);
     if (VIEW === "read" || VIEW === "practice") render();
   } catch (e) { toast("音频保存失败：设备存储空间可能不足"); }
 }
-async function removeAudio(aid) { await idbDel(aid); if (TR[aid]) { TR[aid].audio = null; saveTR(); } if (AUD.aid === aid) audioUnload(); render(); }
+async function removeAudio(aid) { await idbDel(aid); idbDel(aid + "#asr").catch(() => {}); ALN.q = ALN.q.filter(x => x !== aid); if (ALN.job && ALN.job.aid === aid) ALN.job.cancel = true; if (TR[aid]) { TR[aid].audio = null; delete TR[aid].align; delete TR[aid].fix; saveTR(); } if (AUD.aid === aid) audioUnload(); render(); }
 
 /* ---------- audio: player + sync ---------- */
 const AUD = { el: null, aid: null, url: null, starts: null, loop: null, follow: true, segEnd: null, segCb: null, rate: 1, raf: 0, last: -1, bar: false };
@@ -1388,6 +1395,7 @@ function computeStarts(aid) {
   const raw = [];
   P.forEach((p, i) => { if (p.st && p.st.length === p.s.length) { p.st.forEach(x => raw.push(x)); return; } const t0 = ps[i], t1 = i + 1 < P.length ? ps[i + 1] : est; const cs = p.s.map(s => s.length + 2), tot = cs.reduce((a, b) => a + b, 0); let acc = 0; p.s.forEach((s, k) => { raw.push(t0 + (t1 - t0) * acc / tot); acc += cs[k]; }); });
   AUD.raw = raw;
+  if (T.align && T.align.st && T.align.st.length === raw.length) { const fx = T.fix || {}; AUD.starts = T.align.st.map((x, g) => fx[g] != null ? fx[g] : x); AUD.dur = dur; return; }
   const cal = T.cal || [];
   let fa = 1, fb = T.off || 0;
   if (cal.length >= 2) { const n = cal.length, mx = cal.reduce((s, c) => s + c[0], 0) / n, my = cal.reduce((s, c) => s + c[1], 0) / n; let num = 0, den = 0; cal.forEach(c => { num += (c[0] - mx) * (c[1] - my); den += (c[0] - mx) ** 2; }); if (den > 1) { fa = num / den; fb = my - fa * mx; } }
@@ -1425,6 +1433,7 @@ function onSentence(g) {
 }
 async function playAt(aid, g, opts = {}) {
   if (!(await audioLoad(aid))) { toast("这篇还没有导入音频"); return; }
+  if (FULL && alnStatus(aid) === "todo") { alnQueue(aid, true); toast("已开始智能对齐，几分钟后高亮会逐句跟随声音", 4000); }
   const el = audioEl(); AUD.bar = true;
   const go2 = () => { el.currentTime = sStart(g); AUD.segEnd = opts.seg ? sEnd(g) : null; AUD.segCb = opts.cb || null; el.playbackRate = AUD.rate; el.play().catch(() => toast("点一下播放键开始")); drawBar(); };
   if (el.readyState >= 1) go2(); else el.addEventListener("loadedmetadata", go2, { once: true });
@@ -1447,7 +1456,9 @@ function drawBar() {
 }
 function calibrateHere(aid, g) {
   const el = AUD.el; if (!el || AUD.aid !== aid || !AUD.raw) { toast("先播放这篇的音频，再在句子开始时点「对齐」"); return; }
-  const T = TR[aid]; T.cal = (T.cal || []).filter(c => Math.abs(c[0] - AUD.raw[g]) > 20).concat([[AUD.raw[g], Math.max(0, el.currentTime - 0.25)]]).slice(-6);
+  const T = TR[aid];
+  if (T.align && T.align.st) { T.fix = T.fix || {}; T.fix[g] = Math.max(0, Math.round((el.currentTime - 0.25) * 100) / 100); saveTR(); computeStarts(aid); AUD.last = -1; toast("这句的起点已修正"); return; }
+  T.cal = (T.cal || []).filter(c => Math.abs(c[0] - AUD.raw[g]) > 20).concat([[AUD.raw[g], Math.max(0, el.currentTime - 0.25)]]).slice(-6);
   saveTR(); computeStarts(aid); AUD.last = -1; toast(`已对齐（共 ${T.cal.length} 个校准点）。两处以上校准，整篇会更准`);
 }
 
@@ -1468,7 +1479,7 @@ function moduleHTML(aid, mi) {
       const g = g0 + k, s = getS(aid, g, "t");
       return `<span class="sent${set.has(g) ? " rd" : ""}" data-m="t" data-s="${g}">${s.toks.map((t, ti) => t[1] ? `<span class="w${a.keys[t[1]] ? " kw" : ""}${vset.has(t[1]) ? " seen" : ""}" data-t="${ti}">${esc(t[0])}</span>${t[2]}` : esc(t[0]) + t[2]).join("")}</span>`;
     }).join(" ");
-    const stamp = P.t != null || T.audio ? `<button class="pstamp" data-act="playpara" data-g="${g0}" title="从这段播放">${I.play}<span class="num">${P.t != null ? fmtT(P.t) : "播放"}</span></button>` : "";
+    const stamp = P.t != null || T.audio ? `<button class="pstamp" data-act="playpara" data-g="${g0}" title="从这段播放">${I.play}<span class="num">${T.align && T.align.st[g0] != null ? fmtT(T.align.st[g0]) : P.t != null ? fmtT(P.t) : "播放"}</span></button>` : "";
     html += `<div class="pblock">${stamp}<p class="para">${en}</p>${P.zh ? `<p class="zhp"${READ_MODE === "en" ? " hidden" : ""}>${esc(P.zh)}</p>` : ""}</div>`;
   }
   const nav = `<div class="modnav">${mi > 1 ? `<button class="btn ghost" data-act="mod" data-i="${mi - 1}">上一部分</button>` : `<button class="btn ghost" data-act="mod" data-i="0">导读</button>`}${mi < X.mods.length ? `<button class="btn" data-act="mod" data-i="${mi + 1}">下一部分</button>` : ""}</div>`;
@@ -1502,7 +1513,8 @@ function audioPanel(aid) {
   `${T.audio ? `<div class="note" style="background:var(--soft)">已导入：${esc(T.audio.name)}（${(T.audio.size / 1048576).toFixed(1)} MB）${(T.cal || []).length ? " · 已校准 " + T.cal.length + " 处" : ""}</div>
     <div class="row" style="margin-top:10px"><button class="btn" data-act="playpara" data-g="0">${I.play}从头播放</button><label class="btn ghost" style="position:relative;overflow:hidden">更换文件<input type="file" accept="${AUD_ACCEPT}" data-aud="${aid}" style="position:absolute;inset:0;opacity:0"></label><button class="btn warn" data-act="audiodel" data-id="${aid}">删除音频</button></div>` :
   `<div class="blk"><h4>方式一：导入音频或视频文件（推荐，可离线、可逐句对齐）</h4><p class="muted" style="font-size:13px;margin:0 0 8px">选择这场演讲的音频或视频文件，例如 TED 官方播客「TED Talks Daily」对应的单集。文件只存在这台设备上。</p><label class="btn" style="position:relative;overflow:hidden">${I.out}选择文件<input type="file" accept="${AUD_ACCEPT}" data-aud="${aid}" style="position:absolute;inset:0;opacity:0"></label></div>`}
-  <div class="blk"><h4>${T.audio ? "对齐说明" : "导入后怎么用"}</h4><p class="muted" style="font-size:13px;margin:0">点段落前的时间就从那里播放；播放条上可以单句循环、变速、前后跳 5 秒。播客音频开头常有片头广告，如果高亮和声音对不上：在声音刚开始读某句时，双击这句打开解析，点「这句从此刻开始」，校准两处以上整篇就准了。</p></div>
+  ${T.audio ? `<div class="blk"><h4>智能对齐</h4><div id="alnpanel" data-id="${aid}">${alnPanelInner(aid)}</div></div>` : ""}
+  <div class="blk"><h4>${T.audio ? "使用说明" : "导入后怎么用"}</h4><p class="muted" style="font-size:13px;margin:0">点段落前的时间就从那里播放；播放条上可以单句循环、变速、前后跳 5 秒。播客音频开头常有片头广告，导入音频后会自动在本机做智能对齐，逐句定位，开场白、掌声和观众互动会被跳过。</p></div>
   <div class="blk"><h4>方式二：在线听（TED 官方播放器）</h4><div class="embedbox" id="embedbox"><button class="btn ghost" data-act="embed" data-slug="${esc(a.ted.slug)}">${I.play}加载官方播放器</button><a class="btn ghost" href="${esc(a.ted.url)}" target="_blank" rel="noopener">在 TED 官网打开</a></div><p class="faint" style="font-size:12px;margin:6px 0 0">在线播放需要能访问 TED 网站，不能和讲稿逐句同步。</p></div>`, { kind: "drawer" });
 }
 
@@ -1801,6 +1813,7 @@ function vJing() {
   return `<div class="sechead"><h2>精读学习</h2><span class="muted">完成 ${jingDone().length} 篇 · 库中 ${items.length} 篇</span></div>
   ${FULL ? `<button class="impcard" id="s-imp" data-act="go" data-v="imp"><span class="ib">${I.plus}</span><span class="it"><b>导入内容，生成精读推送</b><span>TXT · PDF · Word · 字幕 · 粘贴文本，可附中文译文和音频</span></span><span class="go">${I.down}</span></button>`
     : `<div class="fullcta" id="s-imp"><div>精读学习需要在 App 版中导入内容。</div>${PWA_URL ? `<a class="btn" href="${PWA_URL}" target="_blank" rel="noopener">打开 App 版</a>` : ""}</div>`}
+  ${FULL ? alnLibHTML() : ""}
   <div class="sec" id="s-mine"><div class="sechead"><h3>我的精读库</h3>${items.length ? `<span class="muted" style="font-size:12px">点一篇即可设为本周精读或预览</span>` : ""}</div>
   ${items.length ? `<div class="libgrid">${items.map(jingCard).join("")}</div>` : `<div class="empty">还没有导入内容。导入后会出现在这里，点一下就能开始精读。</div>`}</div>
   <div class="sec" id="s-rec"><div class="sechead"><h3>推荐演讲 · 20 场 TED</h3><span class="muted" style="font-size:12px">打开讲稿复制，再点「导入」粘贴</span></div>${recList("导入")}</div>`;
@@ -1851,6 +1864,7 @@ function vRead() {
     ${full ? `<button class="btn sm ${T.audio ? "" : "ghost"}" data-act="audiopanel">${I.ear}原声</button>` : ""}<button class="btn sm ghost" data-act="listen" data-id="${a.id}">${I.vol}朗读</button>
     <div class="prog"><div class="bar"><i id="rbar" style="width:${Math.round(p * 100)}%"></i></div><span class="num" id="rpct">${Math.round(p * 100)}%</span></div>
   </div>
+  ${full && T.audio ? alnBox(a.id) : ""}
   ${full ? `<div id="modtabs">${modTabs(a.id)}</div>` : ""}
   <div class="reader${READ_MODE === "zh" ? " zhonly" : ""}" id="reader">${body}</div>
   <div class="rfoot"><div class="legend"><span><i style="background:color-mix(in srgb,var(--gold) 35%,transparent)"></i>重点词</span><span><i style="background:transparent;border-bottom:2px dotted var(--accent)"></i>已点学</span><span>单击单词：查词 · 双击或长按：整句解析</span></div>
@@ -1879,7 +1893,7 @@ function itemDelete(id) {
   if (S.cur.art === id) S.cur.art = null; if (S.nextPick === id) S.nextPick = null;
   S.abandoned = S.abandoned.filter(x => x !== id); S.done = S.done.filter(x => x.a !== id);
   Object.keys(SEN).forEach(k => { if (SEN[k].a === id) delete SEN[k]; });
-  idbDel(id).catch(() => {}); if (AUD.aid === id) audioUnload();
+  idbDel(id).catch(() => {}); idbDel(id + "#asr").catch(() => {}); ALN.q = ALN.q.filter(x => x !== id); if (ALN.job && ALN.job.aid === id) ALN.job.cancel = true; if (AUD.aid === id) audioUnload();
   saveTR(); saveItems(); LS.set("sen", SEN); save();
 }
 
@@ -2043,7 +2057,7 @@ async function impSave(push) {
   const T = buildFromParas(P.paras, P.zhMode);
   const meta = { id, title, cat: P.cat || "其他", src, speaker: P.speaker || "", at: Date.now(), quote: "" };
   TR[id] = T; meta.quote = pickQuote(T); ITEMS[id] = meta; regItem(meta);
-  if (P.audio) { try { await idbPut(id, { blob: P.audio, name: P.audio.name, type: P.audio.type }); T.audio = { name: P.audio.name, type: P.audio.type, size: P.audio.size }; } catch (e) { toast("音频保存失败：存储空间可能不足"); } }
+  if (P.audio) { try { await idbPut(id, { blob: P.audio, name: P.audio.name, type: P.audio.type }); T.audio = { name: P.audio.name, type: P.audio.type, size: P.audio.size }; setTimeout(() => alnQueue(id), 800); } catch (e) { toast("音频保存失败：存储空间可能不足"); } }
   saveTR(); saveItems(); S.rmod = S.rmod || {}; S.rmod[id] = 1; impReset();
   if (!push) { save(); go("jing"); toast("已加入精读库"); return; }
   const cur = S.cur.art;
@@ -2360,6 +2374,273 @@ function swipeEnd(cancel) {
 document.addEventListener("touchend", () => swipeEnd(false), { passive: true });
 document.addEventListener("touchcancel", () => swipeEnd(true), { passive: true });
 
+/* ---------- v1.6: on-device speech recognition → sentence-accurate audio alignment ---------- */
+const ALN = { w: null, seq: 0, wait: {}, q: [], job: null, dl: {} };
+function alnWorker() {
+  if (ALN.w) return ALN.w;
+  const w = new Worker("align-worker.js", { type: "module" });
+  w.onmessage = e => {
+    const m = e.data;
+    if (m.type === "dl") { ALN.dl[m.file] = [m.loaded, m.total]; alnUI(); return; }
+    const k = m.type === "ready" ? "load" : m.id; const p = ALN.wait[k]; if (!p) return; delete ALN.wait[k];
+    if (m.type === "err") p.rej(new Error(m.msg)); else p.res(m);
+  };
+  w.onerror = e => { Object.values(ALN.wait).forEach(p => p.rej(new Error("识别组件加载失败" + (e && e.message ? "：" + e.message : "")))); ALN.wait = {}; ALN.w = null; };
+  return (ALN.w = w);
+}
+function alnCall(msg, ms) {
+  const k = msg.type === "load" ? "load" : (msg.id = ++ALN.seq);
+  return new Promise((res, rej) => {
+    const to = setTimeout(() => { delete ALN.wait[k]; rej(new Error("timeout")); }, ms || 180000);
+    ALN.wait[k] = { res: v => { clearTimeout(to); res(v); }, rej: er => { clearTimeout(to); rej(er); } };
+    alnWorker().postMessage(msg, msg.pcm ? [msg.pcm.buffer] : []);
+  });
+}
+function alnReset() { if (ALN.w) { try { ALN.w.terminate(); } catch (e) {} } ALN.w = null; ALN.wait = {}; }
+async function decodePCM(blob) {
+  const buf = await blob.arrayBuffer();
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const ctx = new OAC(1, 16000, 16000);
+  const ab = await new Promise((res, rej) => { const p = ctx.decodeAudioData(buf, res, rej); if (p && p.then) p.then(res, rej); });
+  const n = ab.length, out = new Float32Array(n), ch = ab.numberOfChannels;
+  for (let c = 0; c < ch; c++) { const d = ab.getChannelData(c); for (let i = 0; i < n; i++) out[i] += d[i] / ch; }
+  return { pcm: out, sr: ab.sampleRate, dur: ab.duration };
+}
+const normW = w => w.toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, "");
+function speechClock(runs) {
+  const R = runs.filter(r => r[1] - r[0] >= 0.12), cum = [0]; R.forEach((r, i) => cum.push(cum[i] + r[1] - r[0]));
+  const toS = t => { let lo = 0, hi = R.length; while (lo < hi) { const m = (lo + hi) >> 1; if (R[m][0] < t) lo = m + 1; else hi = m; } let p = cum[lo]; if (lo && R[lo - 1][1] > t) p -= R[lo - 1][1] - t; return t - p; };
+  const fromS = u => { let lo = 0, hi = R.length; while (lo < hi) { const m = (lo + hi) >> 1; if (R[m][0] - cum[m] <= u) lo = m + 1; else hi = m; } return u + cum[lo]; };
+  return { toS, fromS };
+}
+function segWords(segs, runs) {
+  const out = []; let prevTxt = ""; const C = speechClock(runs || []);
+  const rs = segs.filter(sg => sg.e != null && sg.e > sg.s && sg.x.trim().length > 20 && !loopy(sg.x)).map(sg => (C.toS(sg.e) - C.toS(sg.s)) / sg.x.trim().length).filter(x => x > 0).sort((a, b) => a - b);
+  const cps = rs.length ? rs[Math.floor(rs.length / 2)] : 0.06;
+  segs.forEach((sg, si) => {
+    const txt = sg.x.trim(); if (!txt || /^[\[(].*[\])]$/.test(txt)) return;
+    if (loopy(txt)) return;
+    const nt = txt.toLowerCase().replace(/[^a-z ]/g, ""); if (nt === prevTxt) return; prevTxt = nt;
+    const ws = txt.split(/\s+/).filter(Boolean); const L = ws.reduce((n, w) => n + w.length + 1, 0) || 1;
+    const e = sg.e != null && sg.e > sg.s ? sg.e : sg.s + txt.length * 0.065;
+    let us = C.toS(sg.s); const ue = Math.max(us + 0.05, C.toS(e)), needS = txt.length * cps;
+    if (ue - us > needS * 1.4 + 0.6) us = ue - needS * 1.1;
+    let acc = 0;
+    ws.forEach(w => { const n = normW(w); if (n) out.push({ w: n, t: C.fromS(us + (ue - us) * acc / L), sg: si, a: acc, L, us, ue }); acc += w.length + 1; });
+  });
+  out.C = C; out.cps = cps;
+  return out;
+}
+/* semi-global alignment of transcript words (T) against recognised words (A) */
+function alignSeq(T, A) {
+  const n = T.length, m = A.length, W = m + 1;
+  const tb = new Uint8Array((n + 1) * W); let prev = new Float32Array(W), cur = new Float32Array(W); const colm = new Float32Array(n + 1);
+  const sim = (a, b) => { if (a === b) return a.length <= 2 ? 2 : 3; if (a.length >= 4 && b.length >= 4) { if (a.slice(0, 4) === b.slice(0, 4) || a.slice(-4) === b.slice(-4)) return 1; } return -1; };
+  for (let i = 1; i <= n; i++) {
+    cur[0] = 0; tb[i * W] = 2; const ti = T[i - 1];
+    for (let j = 1; j <= m; j++) {
+      const d = prev[j - 1] + sim(ti, A[j - 1].w), u = prev[j] - 1, l = cur[j - 1] - 1;
+      if (d >= u && d >= l) { cur[j] = d; tb[i * W + j] = 0; } else if (u >= l) { cur[j] = u; tb[i * W + j] = 1; } else { cur[j] = l; tb[i * W + j] = 2; }
+    }
+    colm[i] = cur[m]; const sw = prev; prev = cur; cur = sw;
+  }
+  // free end gaps: best cell in last row or last column
+  let bi = n, bj = 0, best = -1e9;
+  for (let j = 0; j <= m; j++) if (prev[j] > best) { best = prev[j]; bj = j; }
+  for (let r = 1; r < n; r++) if (colm[r] > best) { best = colm[r]; bi = r; bj = m; }
+  const pairs = new Int32Array(n).fill(-1);
+  let i = bi, j = bj;
+  while (i > 0 && j > 0) { const d = tb[i * W + j]; if (d === 0) { if (sim(T[i - 1], A[j - 1].w) > 0) pairs[i - 1] = j - 1; i--; j--; } else if (d === 1) i--; else j--; }
+  return pairs;
+}
+function pauseRuns(pcm) {
+  const F = 320, n = Math.floor(pcm.length / F), db = new Float32Array(n), zc = new Float32Array(n);
+  for (let k = 0; k < n; k++) { let e = 0, z = 0, o = k * F; for (let i = o; i < o + F; i++) { e += pcm[i] * pcm[i]; if (i > o && (pcm[i] >= 0) !== (pcm[i - 1] >= 0)) z++; } db[k] = 10 * Math.log10(e / F + 1e-10); zc[k] = z / F; }
+  const blk = 250, quiet = new Uint8Array(n), noisy = new Uint8Array(n);
+  for (let b0 = 0; b0 < n; b0 += blk) {
+    const a = Math.max(0, b0 - blk), b = Math.min(n, b0 + 2 * blk), arr = Array.from(db.subarray(a, b)).sort((x, y) => x - y);
+    const lo = arr[Math.floor(arr.length * 0.1)], hi = arr[Math.floor(arr.length * 0.9)], th = lo + 0.3 * (hi - lo);
+    for (let k = b0; k < Math.min(n, b0 + blk); k++) { quiet[k] = db[k] < th ? 1 : 0; noisy[k] = !quiet[k] && zc[k] > 0.28 ? 1 : 0; }
+  }
+  const runs = [], push = (k0, k1, kind) => { if (runs.length && k0 / 50 - runs[runs.length - 1][1] <= 0.08) { const r = runs[runs.length - 1]; r[1] = k1 / 50; r[2] |= kind; } else runs.push([k0 / 50, k1 / 50, kind]); };
+  let k = 0;
+  while (k < n) {
+    if (quiet[k] || noisy[k]) { let e = k, nq = 0, nn = 0; while (e < n && (quiet[e] || noisy[e])) { if (quiet[e]) nq++; else nn++; e++; } if (nq >= 5 || nn >= 20) push(k, e, nn >= 20 ? 2 : 1); k = e; } else k++;
+  }
+  return runs;
+}
+function snapStart(t, runs, win, lo, cm) {
+  let best = null, bs = -1e9;
+  for (const r of runs) {
+    if (r[1] < t - win || r[0] > t + win) continue;
+    const end = r[1], d = Math.abs(end - t), len = r[1] - r[0];
+    if (end < lo) continue;
+    const sc = Math.min(len, r[2] & 2 ? 1.5 : 0.6) - 0.8 * (end > t + win ? 0 : d);
+    if (sc > bs) { bs = sc; best = end; }
+  }
+  return best != null ? Math.max(0, best - 0.04) : t;
+}
+function buildAlign(aid, words, E, dur) {
+  const X = TX(aid); const tw = [], tg = [];
+  const TAG = /^\s*[\(\[][^)\]]{1,40}[\)\]][.!]?\s*$/, isTag = X.flat.map(f => TAG.test(f.en));
+  X.flat.forEach((f, g) => { if (!isTag[g]) f.en.replace(/\([^)]{1,40}\)/g, " ").split(/\s+/).forEach(w => { const n = normW(w); if (n) { tw.push(n); tg.push(g); } }); });
+  const pairs = alignSeq(tw, words);
+  const ok = new Uint8Array(tw.length);
+  for (let i = 0; i < tw.length; i++) if (pairs[i] >= 0) { let nb = 0; for (let d = -2; d <= 2; d++) if (d && pairs[i + d] >= 0 && pairs[i + d] - pairs[i] === d) nb++; if (nb >= 1) ok[i] = 1; }
+  // transcript words the recogniser missed right before a new segment were probably spoken at that segment's start → re-time it
+  if (words.C) {
+    const tchars = tw.map(w => w.length + 1); let ip = -1;
+    for (let i = 0; i < tw.length; i++) {
+      if (!ok[i]) continue;
+      const j = pairs[i], wj = words[j];
+      if (ip >= 0 && i - ip > 1) {
+        const jp = pairs[ip], wp = words[jp];
+        const firstInSeg = j === 0 || words[j - 1].sg !== wj.sg, prevLast = jp + 1 >= words.length || words[jp + 1].sg !== wp.sg;
+        if (wp.sg !== wj.sg && firstInSeg && prevLast) {
+          let M = 0; for (let k = ip + 1; k < i; k++) M += tchars[k];
+          const sgId = wj.sg, span = wj.ue - wj.us, mt = Math.min(M * words.cps, Math.max(0, span - wj.L * words.cps));
+          if (mt > 0.3) for (let q = j; q < words.length && words[q].sg === sgId; q++) { const x = words[q]; x.t = words.C.fromS(x.us + mt + (span - mt) * x.a / x.L); }
+        }
+      }
+      ip = i;
+    }
+  }
+  const anc = []; for (let i = 0; i < tw.length; i++) if (ok[i]) { const t = words[pairs[i]].t; if (!anc.length || t >= anc[anc.length - 1][1]) anc.push([i, t]); }
+  const wt = new Float64Array(tw.length).fill(NaN); anc.forEach(([i, t]) => wt[i] = t);
+  const RATE = 0.36;
+  if (!anc.length) return null;
+  for (let i = 0; i < anc[0][0]; i++) wt[i] = Math.max(0, anc[0][1] - (anc[0][0] - i) * RATE);
+  for (let k = 0; k + 1 < anc.length; k++) {
+    const [i0, t0] = anc[k], [i1, t1] = anc[k + 1]; if (i1 - i0 < 2) continue;
+    const need = (i1 - i0) * RATE, span = t1 - t0;
+    for (let i = i0 + 1; i < i1; i++) wt[i] = span > need * 1.8 + 2 ? t0 + (i - i0) * RATE : t0 + span * (i - i0) / (i1 - i0);
+  }
+  const L = anc[anc.length - 1]; for (let i = L[0] + 1; i < tw.length; i++) wt[i] = Math.min(dur || 1e9, L[1] + (i - L[0]) * RATE);
+  const n = X.flat.length, st = new Array(n).fill(null), hit = new Array(n).fill(0), cnt = new Array(n).fill(0);
+  for (let i = 0; i < tw.length; i++) { const g = tg[i]; if (st[g] == null) st[g] = wt[i]; cnt[g]++; if (ok[i]) hit[g]++; }
+  const first = new Array(n).fill(-1); for (let i = tg.length - 1; i >= 0; i--) first[tg[i]] = i;
+  const speech = []; for (let g = 0; g < n; g++) if (!isTag[g] && st[g] != null) speech.push(g);
+  let prevT = 0;
+  speech.forEach((g, k) => {
+    const firstOk = first[g] >= 0 && ok[first[g]];
+    const gap = k + 1 < speech.length ? st[speech[k + 1]] - st[g] : cnt[g] * 0.33;
+    const en = X.flat[g].en, ci = en.search(/[,;:—–]/), cm = ci > 0 && ci < 45 ? ci * 0.062 : 0;
+    st[g] = snapStart(st[g], E, Math.min(firstOk ? 0.8 : 1.4, Math.max(0.3, gap * 0.4)), k ? prevT + 0.3 : 0, cm);
+    if (k && st[g] < prevT + 0.25) st[g] = prevT + 0.25;
+    prevT = st[g];
+  });
+  for (let g = 0; g < n; g++) {
+    if (st[g] != null && !isTag[g]) continue;
+    const prev = g ? st[g - 1] : 0; let next = dur || prev + 5; for (let h = g + 1; h < n; h++) if (st[h] != null && !isTag[h]) { next = st[h]; break; }
+    const run = isTag[g] ? E.find(r => (r[2] & 2) && r[0] >= prev + 0.5 && r[0] < next - 0.2) : null;
+    st[g] = run ? run[0] : Math.min(Math.max(prev + 0.3, next - 2.5), Math.max(prev + 0.05, next - 0.1));
+  }
+  const matched = hit.filter((h, g) => h >= Math.min(2, cnt[g])).length;
+  return { v: 1, st: st.map(x => Math.round(x * 100) / 100), at: Date.now(), cov: Math.round(ok.reduce((a, b) => a + b, 0) / tw.length * 100), sm: Math.round(matched / n * 100), dur: Math.round(dur) };
+}
+function loopy(x) {
+  const w = (x || "").toLowerCase().replace(/[^a-z' ]/g, " ").split(/\s+/).filter(Boolean); if (w.length < 12) return false;
+  const c = {}; let mx = 0; for (let i = 0; i + 2 < w.length; i++) { const k = w[i] + " " + w[i + 1] + " " + w[i + 2]; c[k] = (c[k] || 0) + 1; if (c[k] > mx) mx = c[k]; }
+  return mx >= 4 && mx * 3 > w.length * 0.25;
+}
+function alnStatus(aid) { const T = TR[aid]; if (!T || !T.audio) return "none"; if (ALN.job && ALN.job.aid === aid) return "run"; if (ALN.q.includes(aid)) return "queued"; return T.align ? "done" : "todo"; }
+function alnQueue(aid, front) {
+  if (!FULL || !TR[aid] || !TR[aid].audio) return;
+  if (typeof Worker !== "function" || !(window.OfflineAudioContext || window.webkitOfflineAudioContext) || typeof WebAssembly !== "object") { toast("这个浏览器不支持本地语音识别，无法自动对齐"); return; }
+  if ((ALN.job && ALN.job.aid === aid) || ALN.q.includes(aid)) return;
+  front ? ALN.q.unshift(aid) : ALN.q.push(aid); alnUI(); alnNext();
+}
+function alnCancel() { if (ALN.job) ALN.job.cancel = true; ALN.q = []; alnUI(); }
+async function alnNext() {
+  if (ALN.job || !ALN.q.length) return;
+  const aid = ALN.q.shift(); const job = ALN.job = { aid, pct: 0, phase: "prep", t0: Date.now(), cancel: false, eta: null };
+  alnUI();
+  try {
+    const rec = await idbGet(aid); if (!rec || !rec.blob) throw new Error("找不到这篇的音频文件");
+    job.phase = "decode"; alnUI();
+    const { pcm, dur } = await decodePCM(rec.blob);
+    if (!dur || dur < 3) throw new Error("音频太短或无法解码");
+    const SR = 16000;
+    let part = await idbGet(aid + "#asr").catch(() => null);
+    if (!part || part.size !== rec.blob.size || Math.abs((part.dur || 0) - dur) > 1) part = { size: rec.blob.size, dur, seek: 0, segs: [] };
+    job.phase = "load"; alnUI();
+    await alnCall({ type: "load" }, 600000);
+    job.phase = "asr"; const tStart = Date.now(), seek0 = part.seek; let fails = 0;
+    while (part.seek < dur - 1) {
+      if (job.cancel) throw new Error("cancel");
+      const s0 = Math.floor(part.seek * SR), win = pcm.slice(s0, Math.min(pcm.length, s0 + 30 * SR)), wl = win.length / SR;
+      let r;
+      try { r = await alnCall({ type: "run", pcm: win }, 240000); fails = 0; }
+      catch (er) { if (job.cancel) throw new Error("cancel"); if (++fails > 2) throw er; alnReset(); await alnCall({ type: "load" }, 600000); continue; }
+      if ((r.chunks || []).some(c => loopy(c.x))) {
+        for (const temp of [0.4, 0.7]) { let r2 = null; try { r2 = await alnCall({ type: "run", pcm: pcm.slice(s0, Math.min(pcm.length, s0 + 30 * SR)), opts: { do_sample: true, temperature: temp } }, 240000); } catch (er) {} if (r2 && r2.chunks && r2.chunks.length && !r2.chunks.some(c => loopy(c.x))) { r = r2; break; } }
+      }
+      if ((r.chunks || []).some(c => loopy(c.x))) {
+        const halves = wl > 12 ? [[0, wl / 2], [wl / 2, wl]] : [[0, wl]];
+        for (const [h0, h1] of halves) {
+          let rr = null; if (halves.length > 1) { try { rr = await alnCall({ type: "run", pcm: pcm.slice(s0 + Math.floor(h0 * SR), s0 + Math.floor(h1 * SR)) }, 240000); } catch (er) { rr = null; } } else rr = r;
+          ((rr && rr.chunks) || []).filter(c => !loopy(c.x)).forEach(c => part.segs.push({ s: part.seek + h0 + (c.t[0] || 0), e: c.t[1] == null ? null : part.seek + h0 + c.t[1], x: c.x }));
+        }
+        part.seek += wl; job.pct = Math.min(99, Math.round(part.seek / dur * 100)); idbPut(aid + "#asr", part).catch(() => {}); alnUI(); continue;
+      }
+      const ch = r.chunks || []; const partial = wl >= 29.5;
+      let adv = Math.min(30, wl);
+      const keep = ch.filter((c, i) => !(partial && i === ch.length - 1 && ch.length > 1 && (c.t[1] == null || c.t[1] >= wl - 0.5)));
+      keep.forEach(c => part.segs.push({ s: part.seek + (c.t[0] || 0), e: c.t[1] == null ? null : part.seek + c.t[1], x: c.x }));
+      if (partial) { const last = ch[ch.length - 1]; if (ch.length > 1 && last && (last.t[1] == null || last.t[1] >= wl - 0.5)) adv = Math.max(8, last.t[0]); else if (last && last.t[1] != null && last.t[1] > 8) adv = Math.min(30, last.t[1]); }
+      part.seek += adv; job.pct = Math.min(99, Math.round(part.seek / dur * 100));
+      const el = (Date.now() - tStart) / 1000, doneS = part.seek - seek0; job.eta = doneS > 20 ? el / doneS * (dur - part.seek) : null;
+      idbPut(aid + "#asr", part).catch(() => {}); alnUI();
+    }
+    job.phase = "match"; alnUI();
+    const al = (() => { const R = pauseRuns(pcm); return buildAlign(aid, segWords(part.segs, R), R, dur); })();
+    if (!al) throw new Error("没有识别到和原文一致的内容，请确认音频和原文是同一场演讲");
+    if (!TR[aid]) return;
+    TR[aid].align = al; TR[aid].cal = []; delete TR[aid].fix; delete TXC[aid]; saveTR();
+    if (AUD.aid === aid) { computeStarts(aid); AUD.last = -1; }
+    toast(al.sm >= 60 ? `「${(AMAP[aid] || {}).title || ""}」对齐完成：${al.sm}% 的句子在音频里精确定位` : `对齐完成，但只有 ${al.sm}% 的句子能在音频里找到，音频和原文可能不完全一致`, 5000);
+  } catch (e) {
+    if (e.message !== "cancel") { console.error(e); toast("对齐失败：" + (e.message === "timeout" ? "识别超时，请让 App 保持在前台后重试" : e.message), 6000); }
+  } finally {
+    ALN.job = null; if (VIEW === "read" || VIEW === "jing" || VIEW === "practice") render(); else alnUI();
+    setTimeout(alnNext, 300);
+  }
+}
+function alnMsg() {
+  const j = ALN.job; if (!j) return "";
+  const dl = Object.values(ALN.dl), got = dl.reduce((a, b) => a + b[0], 0), tot = dl.reduce((a, b) => a + b[1], 0);
+  if (j.phase === "prep" || j.phase === "decode") return "正在解码音频…";
+  if (j.phase === "load") return tot && got < tot ? `首次使用：下载识别模型 ${(got / 1048576).toFixed(0)} / ${(tot / 1048576).toFixed(0)} MB` : "正在加载识别模型…";
+  if (j.phase === "match") return "正在逐句匹配…";
+  return `正在识别音频 ${j.pct}%${j.eta != null ? " · 约剩 " + (j.eta > 90 ? Math.ceil(j.eta / 60) + " 分钟" : Math.max(5, Math.round(j.eta / 5) * 5) + " 秒") : ""}`;
+}
+function alnBox(aid) {
+  const st = alnStatus(aid), T = TR[aid];
+  if (st === "none") return "";
+  if (st === "run") return `<div class="alnbox run" id="alnbox"><div class="alnt"><b>智能对齐中</b><span id="alnmsg">${alnMsg()}</span></div><div class="bar"><i id="alnbar" style="width:${ALN.job.pct}%"></i></div><div class="row"><span class="faint" style="font-size:11.5px">识别在本机进行，请让 App 保持在前台；中途退出下次会接着做。</span><button class="btn sm ghost" data-act="alncancel">取消</button></div></div>`;
+  if (st === "queued") return `<div class="alnbox" id="alnbox"><div class="alnt"><b>排队等待对齐</b><span>前面还有 ${ALN.q.indexOf(aid) + (ALN.job ? 1 : 0)} 篇</span></div></div>`;
+  if (st === "todo") return `<div class="alnbox todo" id="alnbox"><div class="alnt"><b>音频还没逐句对齐</b><span>现在的高亮是按字数估算的，会和声音对不上。智能对齐会在本机识别整段音频，自动跳过主持人开场、掌声和观众互动，把每一句定位到声音开始的位置。</span></div><div class="row"><span class="faint" style="font-size:11.5px">首次需下载约 60 MB 识别组件（之后离线可用）；15 分钟的演讲大约需要 3–6 分钟。</span><button class="btn sm" data-act="alnstart" data-id="${aid}">${I.spark}智能对齐</button></div></div>`;
+  return "";
+}
+function alnUI() {
+  const box = $("#alnbox"), aid = READ_ID;
+  if (box && aid) { const st = alnStatus(aid); if (st === "run" && box.classList.contains("run")) { const m = $("#alnmsg"), b = $("#alnbar"); if (m) m.textContent = alnMsg(); if (b) b.style.width = ALN.job.pct + "%"; } else { const h = alnBox(aid); if (h) box.outerHTML = h; else box.remove(); } }
+  const lb = $("#alnlib"); if (lb) lb.outerHTML = alnLibHTML();
+  const ap = $("#alnpanel"); if (ap) ap.innerHTML = alnPanelInner(ap.dataset.id);
+}
+function alnLibHTML() {
+  const todo = Object.keys(ITEMS).filter(id => alnStatus(id) === "todo");
+  if (ALN.job) { const a = AMAP[ALN.job.aid]; return `<div class="alnbox run" id="alnlib"><div class="alnt"><b>智能对齐：${esc(a ? a.title : "")}</b><span>${alnMsg()}${ALN.q.length ? " · 还有 " + ALN.q.length + " 篇排队" : ""}</span></div><div class="bar"><i style="width:${ALN.job.pct}%"></i></div></div>`; }
+  if (!todo.length) return `<span id="alnlib"></span>`;
+  return `<div class="alnbox todo" id="alnlib"><div class="alnt"><b>${todo.length} 篇的音频还没逐句对齐</b><span>对齐后，播放时高亮会准确跟着声音走。</span></div><div class="row" style="justify-content:flex-end"><button class="btn sm" data-act="alnall">${I.spark}一键对齐全部</button></div></div>`;
+}
+function alnPanelInner(aid) {
+  const st = alnStatus(aid), T = TR[aid]; if (!T || !T.audio) return "";
+  if (st === "run" || st === "queued") return `<div class="note" style="background:var(--soft)">${st === "run" ? alnMsg() : "排队等待对齐"}</div>`;
+  if (st === "done") return `<div class="note" style="background:var(--soft)">已智能对齐：${T.align.sm}% 的句子在音频里精确定位${T.align.sm < 60 ? "（偏低：音频和原文可能不是同一版本）" : ""}。某句还不准时，可在它刚开始读的瞬间双击这句，点「这句从此刻开始」单独修正。</div><div class="row" style="margin-top:8px"><button class="btn sm ghost" data-act="alnstart" data-id="${aid}" data-redo="1">重新对齐</button></div>`;
+  return `<div class="row"><button class="btn sm" data-act="alnstart" data-id="${aid}">${I.spark}智能对齐</button><span class="faint" style="font-size:12px">在本机识别音频，逐句定位</span></div>`;
+}
+
 /* ---------- events ---------- */
 let resetArmed = false;
 document.addEventListener("click", e => {
@@ -2383,6 +2664,9 @@ document.addEventListener("click", e => {
     case "imprec": importSheet(ds.id); break;
     case "impmode": { const nm = ds.keepaud ? ds.x : IMP.mode === ds.x ? null : ds.x; if (ds.keepaud) { IMP.mode = nm; IMP.audioOnly = false; } else if (!IMP.titleLocked) impReset({ mode: nm }); else IMP.mode = nm; } render(); if (IMP.mode === "paste") setTimeout(() => { const ta = $("#imptext"); if (ta) ta.scrollIntoView({ block: "center" }); }, 40); break;
     case "impparse": impFromPaste(); break;
+    case "alnstart": { const id = ds.id; if (ds.redo && TR[id]) { delete TR[id].align; delete TR[id].fix; delete TXC[id]; saveTR(); if (AUD.aid === id) computeStarts(id); } alnQueue(id, true); break; }
+    case "alncancel": alnCancel(); break;
+    case "alnall": Object.keys(ITEMS).filter(id => alnStatus(id) === "todo").forEach(id => alnQueue(id)); break;
     case "impclear": impReset(); render(); window.scrollTo(0, 0); break;
     case "improle": impSetRole(+ds.i, ds.r); break;
     case "audtoitem": { const f = IMP.audio, id = ds.id; if (!f || !ITEMS[id]) break; impReset(); importAudio(id, f).then(() => openRead(id)); break; }
