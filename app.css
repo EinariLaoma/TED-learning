@@ -566,3 +566,10 @@ html[data-mode="S"] .dropnote{display:none}
 .pickbig b{white-space:nowrap}
 @media (max-width:560px){.impick .pickbig:first-child span{flex:1;text-align:left}}
 .tag.off{background:var(--soft);color:var(--muted)}
+/* v1.5 swipe back */
+#main{overflow-x:clip}
+html.swiping,html.swiping body{-webkit-user-select:none;user-select:none}
+#swipehint{position:fixed;left:0;top:50%;z-index:60;width:44px;height:44px;margin-left:6px;border-radius:50%;display:grid;place-items:center;background:var(--card);color:var(--accent);box-shadow:0 6px 20px rgba(0,0,0,.18);opacity:0;pointer-events:none;transform:translate(-46px,-50%)}
+#swipehint svg{width:22px;height:22px}
+#swipehint.ok{background:var(--accent);color:var(--accent-ink)}
+#swipehint.no{color:var(--faint,#999)}

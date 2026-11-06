@@ -1,5 +1,5 @@
 /* TED 精读 service worker — cache-first app shell, works offline */
-const CACHE = "tedjd-1.4.0-557ffb6248";
+const CACHE = "tedjd-1.5.0-3303083e69";
 const PRECACHE = ["./", "index.html", "app.css", "app.js", "data.js", "manifest.webmanifest", "icons/icon.svg", "icons/favicon-32.png", "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-192.png", "icons/maskable-512.png", "icons/apple-touch-icon.png", "fonts/literata-400.woff2", "fonts/literata-600.woff2", "vendor/jspdf.umd.min.js", "vendor/html2canvas.min.js", "vendor/xlsx.full.min.js", "vendor/compromise.min.js", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "dict.json"];
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(PRECACHE.map(u => new Request(u, { cache: "reload" })))));

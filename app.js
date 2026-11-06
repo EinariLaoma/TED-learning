@@ -1720,17 +1720,7 @@ function render() {
   if (FULL) drawBar();
   if (pendingRoll) showRollModal();
 }
-function go(v, anchor) {
-  if (ALIAS[v]) { anchor = anchor || ALIAS[v][1]; v = ALIAS[v][0]; }
-  if (!VIEWNAMES.has(v)) v = "home";
-  if (v === "read" && (!READ_ID || !AMAP[READ_ID])) READ_ID = S.cur.art || ARTS[0].id;
-  if (v === "review" && anchor) REVIEW_TAB = EXAM_ANCH.has(anchor) ? "exam" : "mem";
-  if (tabOf(v) && !isSubView(v)) LAST_TAB = v;
-  VIEW = v; closeMenus(); closeSheet(); if (!modalLock) closeModal(true);
-  try { history.replaceState(null, "", "#" + v); } catch (e) {}
-  render(); window.scrollTo(0, 0);
-  if (anchor) setTimeout(() => doSub(v, anchor), 30);
-}
+
 function doSub(v, a) {
   if (v === "read" && a.startsWith("m-")) { READ_MODE = a.slice(2); setReadMode(); return; }
   if (v === "read" && a.startsWith("mod-")) { setMod(READ_ID, +a.slice(4)); renderChrome(); return; }
@@ -2285,6 +2275,91 @@ function vImp() {
   ${pickers}<div class="faint dropnote" style="font-size:12px;margin:-4px 0 8px">电脑上也可以把文件直接拖到这个页面。</div>${mid}${status}${!P.busy ? impAudioOnlyHTML() : ""}${P.paras && !P.busy ? impPreview() : ""}`;
 }
 
+/* ---------- v1.5: page history + swipe right anywhere to go back ---------- */
+const NAV_STACK = []; let NAV_CUR = null, NAV_BACKING = false;
+function go(v, anchor) {
+  if (ALIAS[v]) { anchor = anchor || ALIAS[v][1]; v = ALIAS[v][0]; }
+  if (!VIEWNAMES.has(v)) v = "home";
+  if (v === "read" && (!READ_ID || !AMAP[READ_ID])) READ_ID = S.cur.art || ARTS[0].id;
+  if (v === "review" && anchor) REVIEW_TAB = EXAM_ANCH.has(anchor) ? "exam" : "mem";
+  if (tabOf(v) && !isSubView(v)) LAST_TAB = v;
+  const prev = Object.assign({}, NAV_CUR || { v: VIEW, r: VIEW === "read" ? READ_ID : null, rt: REVIEW_TAB }, { y: window.scrollY });
+  VIEW = v; closeMenus(); closeSheet(); if (!modalLock) closeModal(true);
+  try { history.replaceState(null, "", "#" + v); } catch (e) {}
+  NAV_CUR = { v, r: v === "read" ? READ_ID : null, rt: REVIEW_TAB };
+  if (!NAV_BACKING && prev && (prev.v !== NAV_CUR.v || prev.r !== NAV_CUR.r)) { NAV_STACK.push(prev); if (NAV_STACK.length > 40) NAV_STACK.shift(); }
+  render(); window.scrollTo(0, 0);
+  if (anchor) setTimeout(() => doSub(v, anchor), 30);
+}
+function navTarget() {
+  while (NAV_STACK.length) { const e = NAV_STACK[NAV_STACK.length - 1]; if (e.v === "read" && (!e.r || !AMAP[e.r])) { NAV_STACK.pop(); continue; } return e; }
+  if (isSubView(VIEW)) return { v: VIEW === "read" ? (isUser(READ_ID) ? "jing" : "short") : VIEW === "imp" ? "jing" : LAST_TAB, fallback: true };
+  return null;
+}
+function canGoBack() { return !!navTarget(); }
+function navBack() {
+  const t = navTarget(); if (!t) return false;
+  if (!t.fallback) NAV_STACK.pop();
+  if (t.r) READ_ID = t.r; if (t.rt) REVIEW_TAB = t.rt;
+  NAV_BACKING = true; try { go(t.v); } finally { NAV_BACKING = false; }
+  if (t.y) { const y = t.y; requestAnimationFrame(() => window.scrollTo(0, y)); setTimeout(() => window.scrollTo(0, y), 60); }
+  return true;
+}
+/* gesture: a rightward swipe that starts anywhere on the page goes back */
+const SW = { on: false, x0: 0, y0: 0, t0: 0, dx: 0, lock: null, el: null, can: false, kind: null, lx: 0, lt: 0, v: 0 };
+function swipeBlocked(t) {
+  if (!t || !t.closest) return true;
+  if (t.closest("input,textarea,select,[contenteditable=true],.abar,.menu,#bottombar,#side,.toast,#updbar,canvas,video,iframe")) return true;
+  for (let n = t; n && n !== document.body; n = n.parentElement) { if (n.scrollWidth > n.clientWidth + 2 && n.scrollLeft > 2) { const ox = getComputedStyle(n).overflowX; if (ox === "auto" || ox === "scroll") return true; } }
+  return false;
+}
+function swipeHint() { let h = $("#swipehint"); if (!h) { h = document.createElement("div"); h.id = "swipehint"; h.innerHTML = I.back; document.body.appendChild(h); } return h; }
+function swipeLayer() {
+  if ($(".modal")) return modalLock ? null : { kind: "modal", el: $(".modal") };
+  if ($(".sheet")) return { kind: "sheet", el: $(".sheet") };
+  return { kind: "page", el: $("#view") };
+}
+document.addEventListener("touchstart", e => {
+  SW.on = false; if (e.touches.length !== 1 || $(".menu")) return;
+  const t = e.touches[0]; if (swipeBlocked(e.target)) return;
+  const L = swipeLayer(); if (!L || !L.el) return;
+  if (window.getSelection && String(window.getSelection()).length) return;
+  Object.assign(SW, { on: true, x0: t.clientX, y0: t.clientY, t0: performance.now(), lx: t.clientX, lt: performance.now(), v: 0, dx: 0, lock: null, el: L.el, kind: L.kind, can: L.kind !== "page" || canGoBack() });
+}, { passive: true });
+document.addEventListener("touchmove", e => {
+  if (!SW.on || e.touches.length !== 1) return;
+  const t = e.touches[0], dx = t.clientX - SW.x0, dy = t.clientY - SW.y0;
+  if (!SW.lock) {
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    if (dx > 0 && Math.abs(dx) > Math.abs(dy) * 1.4) { SW.lock = "x"; clearTimeout(lpT); clearTimeout(clickT); clickT = null; SW.el.style.transition = "none"; SW.el.style.willChange = "transform"; document.documentElement.classList.add("swiping"); }
+    else { SW.on = false; return; }
+  }
+  e.preventDefault();
+  const now = performance.now(); SW.v = (t.clientX - SW.lx) / Math.max(1, now - SW.lt); SW.lx = t.clientX; SW.lt = now;
+  SW.dx = Math.max(0, dx); const W = window.innerWidth;
+  const shown = SW.can ? SW.dx : W * 0.12 * (1 - Math.exp(-SW.dx / (W * 0.25)));
+  SW.el.style.transform = `translateX(${shown}px)`;
+  if (SW.kind === "page") { const h = swipeHint(), p = Math.min(1, SW.dx / (W * 0.3)); h.classList.toggle("ok", SW.can && p >= 1); h.classList.toggle("no", !SW.can); h.style.opacity = SW.can ? Math.min(1, p * 1.4) : Math.min(.5, p); h.style.transform = `translate(${Math.min(SW.dx * 0.35, 46) - 46}px,-50%) scale(${0.7 + 0.3 * p})`; }
+}, { passive: false });
+function swipeEnd(cancel) {
+  if (!SW.on) return; SW.on = false; if (SW.lock !== "x") return;
+  document.documentElement.classList.remove("swiping");
+  const el = SW.el, W = window.innerWidth, h = $("#swipehint"), mo = S.set.motion !== false;
+  const go2 = !cancel && SW.can && (SW.dx > W * 0.3 || (SW.v > 0.45 && SW.dx > 40));
+  if (h) { h.style.transition = "opacity .2s,transform .2s"; h.style.opacity = 0; setTimeout(() => { if (h) { h.style.transition = ""; } }, 220); }
+  const clear = () => { el.style.transition = ""; el.style.transform = ""; el.style.willChange = ""; el.style.opacity = ""; };
+  if (!go2) { el.style.transition = mo ? "transform .28s cubic-bezier(.2,.9,.3,1)" : "none"; el.style.transform = "translateX(0)"; setTimeout(clear, 300); return; }
+  if (SW.kind !== "page") { el.style.transition = mo ? "transform .2s ease-out, opacity .2s" : "none"; el.style.transform = `translateX(${W}px)`; el.style.opacity = 0; setTimeout(() => { if (SW.kind === "sheet") closeSheet(); else closeModal(); clear(); }, mo ? 190 : 0); return; }
+  el.style.transition = mo ? "transform .18s ease-out, opacity .18s" : "none"; el.style.transform = `translateX(${W}px)`; el.style.opacity = mo ? .3 : 1;
+  setTimeout(() => {
+    clear(); navBack();
+    if (!mo) return; const v = $("#view"); v.style.transition = "none"; v.style.transform = `translateX(${-W * 0.25}px)`; v.style.opacity = .4;
+    requestAnimationFrame(() => requestAnimationFrame(() => { v.style.transition = "transform .3s cubic-bezier(.2,.9,.3,1), opacity .3s"; v.style.transform = "translateX(0)"; v.style.opacity = 1; setTimeout(() => { v.style.transition = ""; v.style.transform = ""; v.style.opacity = ""; }, 320); }));
+  }, mo ? 170 : 0);
+}
+document.addEventListener("touchend", () => swipeEnd(false), { passive: true });
+document.addEventListener("touchcancel", () => swipeEnd(true), { passive: true });
+
 /* ---------- events ---------- */
 let resetArmed = false;
 document.addEventListener("click", e => {
@@ -2297,7 +2372,7 @@ document.addEventListener("click", e => {
     case "sub": closeMenus(); if (VIEW !== ds.v) go(ds.v, ds.a); else doSub(ds.v, ds.a); break;
     case "toc": tocMenu(t); break;
     case "more": case "screen": moreMenu(t); break;
-    case "back": go(VIEW === "read" ? (isUser(READ_ID) ? "jing" : "short") : VIEW === "imp" ? "jing" : LAST_TAB); break;
+    case "back": navBack(); break;
     case "rtab": REVIEW_TAB = ds.x; render(); break;
     case "jingopen": jingOpen(ds.id); break;
     case "setpush": case "setpushhere": { const old = S.cur.art; setPush(ds.id, !!(old && !isDone(old) && old !== ds.id)); closeModal(true); toast("已设为本周精读"); if (act === "setpushhere") render(); else openRead(ds.id); break; }
