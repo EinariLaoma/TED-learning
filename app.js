@@ -178,24 +178,7 @@ async function doInstall() {
 /* ---------- AI provider (PWA) ---------- */
 const AI_PRESETS = { deepseek: ["DeepSeek", "openai", "https://api.deepseek.com", "deepseek-chat"], qwen: ["通义千问", "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"], anthropic: ["Claude", "anthropic", "https://api.anthropic.com", "claude-haiku-5-5"], custom: ["自定义（OpenAI 兼容）", "openai", "", ""] };
 function aiCfg() { return LS.get("aicfg") || { prov: "deepseek", key: "", base: AI_PRESETS.deepseek[2], model: AI_PRESETS.deepseek[3] }; }
-function makeAI() {
-  const c = aiCfg(); if (!c.key) return null;
-  const fmt = (AI_PRESETS[c.prov] || AI_PRESETS.custom)[1];
-  const call = async prompt => {
-    const base = (c.base || "").replace(/\/+$/, ""); let r, j;
-    try {
-      if (fmt === "anthropic") {
-        r = await fetch(base + "/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": c.key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }, body: JSON.stringify({ model: c.model, max_tokens: 1500, messages: [{ role: "user", content: prompt }] }) });
-      } else {
-        r = await fetch(base + "/chat/completions", { method: "POST", headers: { "content-type": "application/json", "authorization": "Bearer " + c.key }, body: JSON.stringify({ model: c.model, temperature: 0.3, messages: [{ role: "user", content: prompt }] }) });
-      }
-    } catch (e) { throw { code: "network", message: "网络不通或服务商不允许浏览器直连" }; }
-    if (!r.ok) { let m = ""; try { const x = await r.json(); m = (x.error && (x.error.message || x.error.type)) || x.message || ""; } catch (e) {} throw { code: "http", message: "HTTP " + r.status + (m ? "：" + String(m).slice(0, 80) : "") }; }
-    j = await r.json();
-    return fmt === "anthropic" ? (j.content || []).map(x => x.text || "").join("") : ((j.choices || [])[0] || {}).message.content || "";
-  };
-  return { json: async (prompt) => { const t = await call(prompt + "\n只输出 JSON 对象本身，不要代码块标记。"); const m = t.match(/\{[\s\S]*\}/); try { return JSON.parse(m ? m[0] : t); } catch (e) { throw { code: "parse", message: "返回内容不是有效 JSON" }; } }, text: call };
-}
+
 function aiErr(e) {
   if (!PWA) return e && e.code === "not_granted" ? "未授权 AI 功能，可在页面权限中开启。" : "暂时无法生成，请稍后再试。";
   return "AI 调用失败：" + ((e && e.message) || "未知错误") + "。请到「设置 → AI 解析服务」检查。";
@@ -427,7 +410,7 @@ function wordInfoHTML(key, aid, si, ti, m) {
   }).join("");
   const keyBlk = K ? `<div class="blk"><h4>用法</h4><div style="font-size:14px">${esc(K.use)}</div><div class="exs" style="margin-top:6px"><div class="ex"><div class="en">${hl(K.ex, L.w)}</div><div class="zh">${esc(K.exZh)}</div><div class="from">例句</div></div></div></div>` : "";
   const aiId = "w_" + safeId(key) + "_" + (aid || "").slice(0, 6) + (m === "t" ? "t" : "") + si;
-  const aiBlk = !aid ? "" : AIC[aiId] ? aiWordHTML(AIC[aiId]) : (Cloud.sample ? `<button class="btn sm ghost" style="margin-top:12px" data-act="aiword" data-k="${esc(key)}" data-a="${aid}" data-s="${si}" data-m="${m || ""}">${I.spark}AI 补充用法与例句</button><div id="aiw"></div>` : PWA ? `<button class="btn sm ghost" style="margin-top:12px" data-act="go" data-v="prefs" data-a="s-ai">${I.spark}开启 AI 补充（需在设置中填写密钥）</button>` : "");
+  const aiBlk = !aid ? "" : AIC[aiId] ? aiWordHTML(AIC[aiId], key, aid, si, m) : (Cloud.sample ? `<button class="btn sm ghost" style="margin-top:12px" data-act="aiword" data-k="${esc(key)}" data-a="${aid}" data-s="${si}" data-m="${m || ""}">${I.spark}AI 例句</button><div id="aiw"></div>` : PWA ? `<button class="btn sm ghost" style="margin-top:12px" data-act="go" data-v="prefs" data-a="s-ai">${I.spark}开启 AI 例句（需在设置中填写密钥）</button>` : "");
   return `<div class="row" style="align-items:baseline"><span class="wd">${esc(L.w)}</span>${L.ph ? `<span class="ph">/${esc(L.ph)}/</span>` : ""}</div>
   <div class="row" style="margin-top:6px"><button class="say" data-act="say" data-text="${esc(L.w)}" data-acc="us">${I.vol}美音</button><button class="say" data-act="say" data-text="${esc(L.w)}" data-acc="uk">${I.vol}英音</button>${tok && tok[3] ? `<span class="tag">${esc(tok[3])}</span>` : ""}${(L.tags || []).slice(0, 5).map(t => `<span class="tag g">${t}</span>`).join("")}</div>
   ${formLine}
@@ -438,10 +421,7 @@ function wordInfoHTML(key, aid, si, ti, m) {
   ${others ? `<div class="blk"><h4>资源库中的其他例句</h4><div class="exs">${others}</div></div>` : ""}
   ${aiBlk}`;
 }
-function aiWordHTML(r) {
-  if (!r) return "";
-  return `<div class="ai"><b>AI 补充</b>${r.ctx ? `<div>语境义：${esc(r.ctx)}</div>` : ""}${r.use ? `<div style="margin-top:4px">${esc(r.use)}</div>` : ""}${(r.coll || []).length ? `<div style="margin-top:4px">搭配：${r.coll.map(esc).join("；")}</div>` : ""}${(r.ex || []).map(e => `<div class="ex" style="margin-top:6px"><div class="en">${esc(e.en)}</div><div class="zh">${esc(e.zh)}</div></div>`).join("")}</div>`;
-}
+
 function openWord(aid, si, ti, el, m) {
   const s = getS(aid, si, m), tok = s.toks[ti], key = tok[1]; if (!key) return;
   $$(".w.act").forEach(x => x.classList.remove("act")); if (el) el.classList.add("act");
@@ -488,15 +468,7 @@ async function openSent(aid, si, m) {
   recordSent(aid, si, m);
   sheet(`<div class="t"><b>整句解析</b><div class="faint" style="font-size:12px">${esc(AMAP[aid].titleZh)} · ${m === "t" ? "全文" : "导读"}第 ${si + 1} 句</div></div>`, sentHTML(aid, si, m), { kind: "drawer" });
 }
-async function aiWord(key, aid, si, m) {
-  const box = $("#aiw"); const btn = $("[data-act=aiword]"); if (btn) btn.disabled = true; if (box) box.innerHTML = '<div class="ai muted">正在生成…</div>';
-  const s = getS(aid, si, m); const L = lx(key) || { w: key };
-  try {
-    const r = await Cloud.sample.json(`你是资深英语老师。学习者在下面这句英文中点击了单词 "${L.w}"。请严格输出 JSON（不要其他文字）：{"ctx":"该词在本句语境中的具体含义（中文，一句话）","use":"常见用法说明（中文，2-3 个要点合成一段）","coll":["常用搭配1","常用搭配2","常用搭配3"],"ex":[{"en":"自然的英文例句","zh":"中文翻译"},{"en":"","zh":""}]}\n句子：${s.en}\n${s.zh && !s.zhPara ? "参考译文：" + s.zh : ""}`, { modelTier: "quick" });
-    const id = "w_" + safeId(key) + "_" + aid.slice(0, 6) + (m === "t" ? "t" : "") + si; AIC[id] = r; putAI(id);
-    if (box) box.innerHTML = aiWordHTML(r); if (btn) btn.remove();
-  } catch (e) { if (box) box.innerHTML = `<div class="ai muted">${esc(aiErr(e))}</div>`; if (btn) btn.disabled = false; }
-}
+
 async function aiSent(aid, si, m) {
   const box = $("#ais"); const btn = $("[data-act=aisent]"); if (btn) btn.disabled = true; if (box) box.innerHTML = '<div class="ai muted">正在解析…</div>';
   const s = getS(aid, si, m);
@@ -965,7 +937,7 @@ let modalLock = false;
 function modal(html, o = {}) {
   closeModal(true); modalLock = !!o.lock;
   const scrim = document.createElement("div"); scrim.className = "scrim mscrim"; if (!o.lock) scrim.dataset.act = "close"; scrim.style.zIndex = 65;
-  const m = document.createElement("div"); m.className = "modal"; if (o.wide) m.style.width = "min(680px,94vw)"; m.innerHTML = html;
+  const m = document.createElement("div"); m.className = "modal" + (o.cls ? " " + o.cls : ""); if (o.wide && !o.cls) m.style.width = "min(680px,94vw)"; m.innerHTML = html;
   document.body.append(scrim, m);
 }
 function closeModal(force) { if (modalLock && !force) return; modalLock = false; $$(".modal,.mscrim").forEach(x => x.remove()); }
@@ -2641,6 +2613,157 @@ function alnPanelInner(aid) {
   return `<div class="row"><button class="btn sm" data-act="alnstart" data-id="${aid}">${I.spark}智能对齐</button><span class="faint" style="font-size:12px">在本机识别音频，逐句定位</span></div>`;
 }
 
+/* ---------- v1.7: AI word study — one example in the word card, “更多” opens a deep-study window ---------- */
+function makeAI() {
+  const c = aiCfg(); if (!c.key) return null;
+  const fmt = (AI_PRESETS[c.prov] || AI_PRESETS.custom)[1];
+  const call = async (prompt, o = {}) => {
+    const base = (c.base || "").replace(/\/+$/, ""); let r, j;
+    const temp = o.temp != null ? o.temp : 0.3, maxT = o.maxTokens || 1500;
+    try {
+      if (fmt === "anthropic") {
+        r = await fetch(base + "/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": c.key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }, body: JSON.stringify({ model: c.model, max_tokens: maxT, temperature: temp, messages: [{ role: "user", content: prompt }] }) });
+      } else {
+        r = await fetch(base + "/chat/completions", { method: "POST", headers: { "content-type": "application/json", "authorization": "Bearer " + c.key }, body: JSON.stringify({ model: c.model, temperature: temp, max_tokens: maxT, messages: [{ role: "user", content: prompt }] }) });
+      }
+    } catch (e) { throw { code: "network", message: "网络不通或服务商不允许浏览器直连" }; }
+    if (!r.ok) { let m = ""; try { const x = await r.json(); m = (x.error && (x.error.message || x.error.type)) || x.message || ""; } catch (e) {} throw { code: "http", message: "HTTP " + r.status + (m ? "：" + String(m).slice(0, 80) : "") }; }
+    j = await r.json();
+    return fmt === "anthropic" ? (j.content || []).map(x => x.text || "").join("") : (((j.choices || [])[0] || {}).message || {}).content || "";
+  };
+  return { json: async (prompt, o) => { const t = await call(prompt + "\n只输出 JSON 对象本身，不要代码块标记。", o); return parseAIJson(t); }, text: call };
+}
+function parseAIJson(t) {
+  t = String(t || "").replace(/^\s*```(?:json)?/i, "").replace(/```\s*$/, "");
+  const a = t.indexOf("{"), b = t.lastIndexOf("}");
+  const s = a >= 0 && b > a ? t.slice(a, b + 1) : t;
+  try { return JSON.parse(s); } catch (e) {}
+  try { return JSON.parse(s.replace(/,\s*([}\]])/g, "$1").replace(/[“”]/g, '"')); } catch (e) { throw { code: "parse", message: "返回内容不是有效 JSON" }; }
+}
+const aiJson = (prompt, o) => Cloud.sample.json(prompt, PWA ? Object.assign({ modelTier: o && o.big ? "default" : "quick" }, o || {}) : { modelTier: o && o.big ? "default" : "quick" });
+function aiHl(en, w) {
+  const base = String(w || "").toLowerCase(), e = esc(en || ""); if (!base) return e;
+  const stem = base.length >= 5 ? base.replace(/(e|y)$/, "") : base, q = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return e.replace(new RegExp("\\b(" + q + (base.length >= 4 ? "[a-z]*" : "") + ")\\b", "gi"), "<mark>$1</mark>");
+}
+const deepId = key => "d_" + safeId(key);
+function aiOneHTML(r, key, aid, si, m) {
+  const more = `<button class="btn sm ghost aimore" data-act="aideep" data-k="${esc(key)}" data-a="${aid}" data-s="${si}" data-m="${m || ""}">${I.spark}更多：AI 深入研究这个词</button>`;
+  if (r.one) return `<div class="ai"><b>AI 例句</b><div class="ex" style="margin-top:6px"><div class="en">${aiHl(r.one.en, key)} <button class="say mini" data-act="say" data-text="${esc(r.one.en)}" aria-label="朗读">${I.vol}</button></div><div class="zh">${esc(r.one.zh)}</div></div>${more}</div>`;
+  return `<div class="ai"><b>AI 补充</b>${r.ctx ? `<div>语境义：${esc(r.ctx)}</div>` : ""}${r.use ? `<div style="margin-top:4px">${esc(r.use)}</div>` : ""}${(r.coll || []).length ? `<div style="margin-top:4px">搭配：${r.coll.map(esc).join("；")}</div>` : ""}${(r.ex || []).slice(0, 1).map(e => `<div class="ex" style="margin-top:6px"><div class="en">${aiHl(e.en, key)}</div><div class="zh">${esc(e.zh)}</div></div>`).join("")}${more}</div>`;
+}
+function aiWordHTML(r, key, aid, si, m) { if (!r) return ""; return aiOneHTML(r, key || r.key || "", aid || r.aid || "", si != null ? si : r.si || 0, m != null ? m : r.m || ""); }
+async function aiWord(key, aid, si, m) {
+  const box = $("#aiw"); const btn = $("[data-act=aiword]"); if (btn) btn.disabled = true; if (box) box.innerHTML = '<div class="ai muted">正在生成例句…</div>';
+  const s = getS(aid, si, m); const L = lx(key) || { w: key };
+  try {
+    const r = await aiJson(`你是资深英语老师。学习者在下面这句英文中点击了单词 "${L.w}"。请为这个词造 1 个全新的、自然地道、长度适中的英文例句（不要照抄原句，用法与原句语境中的含义一致），并给出准确的整句中文翻译。严格输出 JSON：{"one":{"en":"英文例句","zh":"整句中文翻译"}}\n原句：${s.en}`, { temp: 0.7, maxTokens: 400 });
+    if (!r || !r.one || !r.one.en) throw { code: "parse", message: "返回内容缺少例句" };
+    const id = "w_" + safeId(key) + "_" + aid.slice(0, 6) + (m === "t" ? "t" : "") + si; r.key = key; r.aid = aid; r.si = si; r.m = m || ""; AIC[id] = r; putAI(id);
+    if (box) box.innerHTML = aiOneHTML(r, key, aid, si, m); if (btn) btn.remove();
+  } catch (e) { if (box) box.innerHTML = `<div class="ai muted">${esc(aiErr(e))}</div>`; if (btn) btn.disabled = false; }
+}
+
+/* deep-study window */
+const DEEP = { key: null, busy: {} };
+function deepPromptCore(key, s) {
+  const L = lx(key) || { w: key };
+  return `你是资深英语词汇学家兼英语老师，面向中文母语、有理工科背景的成年学习者。请对英文单词 "${L.w}" 做深入研究。学习者是在这句话里遇到它的：${s ? s.en : "（无）"}
+要求：信息准确，不编造；专有名词、网络用语、专业义只写真实存在且常见的，没有就给空数组。严格输出 JSON：
+{"ph":"美式音标（不带斜杠）","brief":"一句话讲清这个词的核心概念（中文）","ctx":"它在学习者那句话中的具体含义（中文，一句）",
+"senses":[{"pos":"词性缩写，如 n. v. adj.","zh":"中文释义","en":"简短英文释义","reg":"语域：通用/正式/书面/口语/俚语/专业","note":"典型语境或使用要点（中文，一句）"}],
+"proper":[{"term":"含这个词的专有名词（品牌、机构、产品、作品、地名、人名、学术术语等）","zh":"是什么、为什么这么叫（中文）"}],
+"slang":[{"term":"网络用语、俚语、流行梗或新兴用法","zh":"含义与使用场合（中文）","ex":"英文示例","exZh":"示例翻译"}],
+"domain":[{"field":"专业领域，如 计算机/金融/医学/工程/法律","zh":"该领域的专门含义（中文）"}],
+"coll":[{"en":"常用搭配、短语动词或句型","zh":"中文"}],
+"forms":"词形变化与派生词（中文说明，含词性）",
+"syn":[{"w":"近义词","diff":"与本词的区别（中文，一句）"}],
+"ant":["反义词"],
+"ety":"词源与记忆提示（中文）",
+"pitfalls":["中国学习者常见误用或易混点（中文，每条一句）"]}
+数量：senses 按常用度排序列出全部常用义项（至少 3 条；若确实只有 1–2 个义项就如实给出）；coll 6–10 条；syn 2–4 条；pitfalls 1–3 条。`;
+}
+function deepPromptEx(key, prev, batch) {
+  const L = lx(key) || { w: key };
+  const focus = batch === 1 ? "第一组：覆盖这个词最常用的 3 个义项或用法，难度由浅到深" : ["换用不同的义项、词性或固定搭配", "放进科技、工程或商业职场的语境", "用口语、对话或社交媒体风格（可以含真实存在的俚语或网络用法）", "用新闻报道或学术写作风格，句子结构更复杂（含从句或非谓语）", "用习语、比喻或较少见但地道的用法"][(batch - 2) % 5];
+  return `为英文单词 "${L.w}" 造 3 个全新的、自然地道的英文例句。本组要求：${focus}。三句之间的场景和句式要明显不同。
+${prev.length ? "不要与下面这些已有例句重复或雷同：\n" + prev.slice(-18).map((x, i) => (i + 1) + ". " + x).join("\n") : ""}
+每句都要给出整句中文翻译和语法分析。严格输出 JSON：
+{"ex":[{"en":"英文例句","zh":"整句中文翻译","sense":"本句中这个词的含义（中文，含词性）","scene":"场景标签，2–4 个字，如 日常/职场/科技/新闻/口语/学术/文学","structure":"句子主干与成分划分（中文，指出主语、谓语、宾语及修饰成分）","grammar":["语法要点：时态、语态、从句类型、非谓语、固定搭配或特殊句式，每条一句（中文）"]}]}`;
+}
+function deepRec(key) { return AIC[deepId(key)] || null; }
+function deepSave(key, rec) { const id = deepId(key); AIC[id] = rec; putAI(id); }
+function aiDeepOpen(key, aid, si, m) {
+  if (!Cloud.sample) { toast("请先在「设置 → AI 解析服务」填写密钥"); return; }
+  DEEP.key = key; DEEP.ctx = aid ? getS(aid, si, m) : null;
+  const L = lx(key) || { w: key };
+  modal(`<div class="aimod-h"><div><div class="aimod-w">${esc(L.w)}</div><div class="faint" id="aiph">${L.ph ? "/" + esc(L.ph) + "/" : ""}</div></div>
+  <div class="row"><button class="say" data-act="say" data-text="${esc(L.w)}" data-acc="us">${I.vol}美音</button><button class="say" data-act="say" data-text="${esc(L.w)}" data-acc="uk">${I.vol}英音</button><button class="iconbtn" data-act="close" aria-label="关闭">${I.x}</button></div></div>
+  <div class="aimod-sub faint">AI 深入研究 · 由你连接的大模型生成，请结合词典判断</div>
+  <div id="aideepcore"></div><div class="aisec"><h4>AI 例句</h4><div id="aiexlist"></div><div id="aiexmore"></div></div>`, { wide: true, cls: "aimod" });
+  const rec = deepRec(key) || { key, ex: [], at: Date.now() };
+  drawDeepCore(rec); drawDeepEx(rec);
+  if (!rec.core) loadDeepCore(key);
+  if (!rec.ex.length) loadDeepEx(key);
+}
+function drawDeepCore(rec) {
+  const box = $("#aideepcore"); if (!box || DEEP.key !== rec.key) return;
+  if (DEEP.busy["c" + rec.key]) { box.innerHTML = `<div class="aiload">${I.spark}<span>正在深入研究这个词：义项、专有名词、网络用语、搭配、辨析…</span></div>`; return; }
+  if (rec.coreErr && !rec.core) { box.innerHTML = `<div class="ai muted">${esc(rec.coreErr)} <button class="linkbtn" data-act="aideepretry">重试</button></div>`; return; }
+  const c = rec.core; if (!c) { box.innerHTML = ""; return; }
+  if (c.ph && $("#aiph") && !$("#aiph").textContent) $("#aiph").textContent = "/" + c.ph + "/";
+  const sec = (t, h) => h ? `<div class="aisec"><h4>${t}</h4>${h}</div>` : "";
+  const arr = a => Array.isArray(a) ? a.filter(Boolean) : [];
+  box.innerHTML = (c.brief ? `<div class="aibrief">${esc(c.brief)}</div>` : "") + (c.ctx && DEEP.ctx ? `<div class="aictx"><span class="tag">原句中</span>${esc(c.ctx)}</div>` : "") +
+    sec("义项", arr(c.senses).length ? `<ol class="aisenses">${arr(c.senses).map(x => `<li><div><span class="tag">${esc(x.pos || "")}</span><b>${esc(x.zh || "")}</b>${x.reg && x.reg !== "通用" ? `<span class="tag off">${esc(x.reg)}</span>` : ""}</div>${x.en ? `<div class="faint">${esc(x.en)}</div>` : ""}${x.note ? `<div class="muted">${esc(x.note)}</div>` : ""}</li>`).join("")}</ol>` : "") +
+    sec("专有名词", arr(c.proper).length ? `<div class="aigrid2">${arr(c.proper).map(x => `<div class="aicell"><b>${esc(x.term || "")}</b><span>${esc(x.zh || "")}</span></div>`).join("")}</div>` : "") +
+    sec("网络用语 / 俚语", arr(c.slang).length ? arr(c.slang).map(x => `<div class="aicell wide"><b>${esc(x.term || "")}</b><span>${esc(x.zh || "")}</span>${x.ex ? `<div class="en">${aiHl(x.ex, rec.key)}</div><div class="zh">${esc(x.exZh || "")}</div>` : ""}</div>`).join("") : "") +
+    sec("专业领域义", arr(c.domain).length ? `<div class="aigrid2">${arr(c.domain).map(x => `<div class="aicell"><b>${esc(x.field || "")}</b><span>${esc(x.zh || "")}</span></div>`).join("")}</div>` : "") +
+    sec("常用搭配", arr(c.coll).length ? `<div class="aicoll">${arr(c.coll).map(x => `<div><span class="en">${aiHl(x.en || "", rec.key)}</span><span class="zh">${esc(x.zh || "")}</span></div>`).join("")}</div>` : "") +
+    sec("词形与派生", c.forms ? `<div>${esc(c.forms)}</div>` : "") +
+    sec("近义词辨析", arr(c.syn).length || arr(c.ant).length ? `${arr(c.syn).map(x => `<div class="aisyn"><b>${esc(x.w || "")}</b><span>${esc(x.diff || "")}</span></div>`).join("")}${arr(c.ant).length ? `<div class="aisyn"><b>反义</b><span>${arr(c.ant).map(esc).join("、")}</span></div>` : ""}` : "") +
+    sec("词源与记忆", c.ety ? `<div>${esc(c.ety)}</div>` : "") +
+    sec("易错提醒", arr(c.pitfalls).length ? `<ul>${arr(c.pitfalls).map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "");
+}
+function exItemHTML(e, i, key) {
+  const g = Array.isArray(e.grammar) ? e.grammar.filter(Boolean) : [];
+  return `<div class="aiex"><div class="aiexh"><span class="num">${i + 1}</span>${e.scene ? `<span class="tag">${esc(e.scene)}</span>` : ""}${e.sense ? `<span class="faint">${esc(e.sense)}</span>` : ""}<button class="say mini" data-act="say" data-text="${esc(e.en || "")}" aria-label="朗读">${I.vol}</button></div>
+  <div class="en">${aiHl(e.en, key)}</div><div class="zh">${esc(e.zh || "")}</div>
+  ${e.structure || g.length ? `<details class="aigram" open><summary>语法分析</summary>${e.structure ? `<div>${esc(e.structure)}</div>` : ""}${g.length ? `<ul>${g.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</details>` : ""}</div>`;
+}
+function drawDeepEx(rec) {
+  const list = $("#aiexlist"), more = $("#aiexmore"); if (!list || DEEP.key !== rec.key) return;
+  list.innerHTML = rec.ex.map((e, i) => exItemHTML(e, i, rec.key)).join("");
+  const busy = DEEP.busy["e" + rec.key];
+  more.innerHTML = busy ? `<div class="aiload">${I.spark}<span>正在造新的 3 个例句并做语法分析…</span></div>`
+    : `${rec.exErr ? `<div class="ai muted" style="margin-bottom:8px">${esc(rec.exErr)}</div>` : ""}<button class="btn aimorebtn" data-act="aiexmore">${I.spark}更多例句（再造 3 句）</button><div class="faint" style="font-size:11.5px;text-align:center;margin-top:6px">已生成 ${rec.ex.length} 句 · 每次点击都会连接大模型继续造句</div>`;
+}
+async function loadDeepCore(key) {
+  const k = "c" + key; if (DEEP.busy[k]) return; DEEP.busy[k] = 1;
+  let rec = deepRec(key) || { key, ex: [], at: Date.now() }; drawDeepCore(rec);
+  try {
+    const r = await aiJson(deepPromptCore(key, DEEP.key === key ? DEEP.ctx : null), { temp: 0.3, maxTokens: 3000, big: true });
+    rec = deepRec(key) || rec; rec.core = r; delete rec.coreErr; deepSave(key, rec);
+  } catch (e) { rec = deepRec(key) || rec; rec.coreErr = aiErr(e); }
+  delete DEEP.busy[k]; drawDeepCore(rec);
+}
+async function loadDeepEx(key) {
+  const k = "e" + key; if (DEEP.busy[k]) return; DEEP.busy[k] = 1;
+  let rec = deepRec(key) || { key, ex: [], at: Date.now() }; drawDeepEx(rec);
+  try {
+    const batch = Math.floor(rec.ex.length / 3) + 1;
+    const r = await aiJson(deepPromptEx(key, rec.ex.map(x => x.en), batch), { temp: 0.85, maxTokens: 2500, big: true });
+    const seen = new Set(rec.ex.map(x => (x.en || "").toLowerCase().trim()));
+    const add = (Array.isArray(r.ex) ? r.ex : []).filter(x => x && x.en && !seen.has(x.en.toLowerCase().trim())).slice(0, 3);
+    if (!add.length) throw { code: "parse", message: "这次没有返回新的例句" };
+    rec = deepRec(key) || rec; rec.ex = rec.ex.concat(add); delete rec.exErr; deepSave(key, rec);
+    delete DEEP.busy[k]; drawDeepEx(rec);
+    const items = $$("#aiexlist .aiex"); const first = items[items.length - add.length]; if (first && rec.ex.length > 3) first.scrollIntoView({ behavior: S.set.motion ? "smooth" : "auto", block: "start" });
+    return;
+  } catch (e) { rec = deepRec(key) || rec; rec.exErr = aiErr(e); }
+  delete DEEP.busy[k]; drawDeepEx(rec);
+}
+
 /* ---------- events ---------- */
 let resetArmed = false;
 document.addEventListener("click", e => {
@@ -2693,6 +2816,9 @@ document.addEventListener("click", e => {
     case "say": say(ds.text, ds.acc || S.set.voice); break;
     case "finish": finishQuiz(); break;
     case "aiword": aiWord(ds.k, ds.a, +ds.s, ds.m); break;
+    case "aideep": aiDeepOpen(ds.k, ds.a, +ds.s, ds.m); break;
+    case "aiexmore": if (DEEP.key) loadDeepEx(DEEP.key); break;
+    case "aideepretry": if (DEEP.key) loadDeepCore(DEEP.key); break;
     case "aisent": aiSent(ds.a, +ds.s, ds.m); break;
     case "qopt": QZ.ans[+ds.qi] = +ds.j; $$("input[data-qi]").forEach(i => QZ.ans[+i.dataset.qi] = i.value); { const sc = $(".modal").scrollTop; drawQuiz(); $(".modal").scrollTop = sc; } break;
     case "qsubmit": { const sc = 0; submitQuiz(); const m = $(".modal"); if (m) m.scrollTop = sc; break; }

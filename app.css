@@ -582,3 +582,42 @@ html.swiping,html.swiping body{-webkit-user-select:none;user-select:none}
 .alnbox .btn svg{width:15px;height:15px}
 .alnbox .bar i{transition:width .4s}
 @media (max-width:560px){.alnbox .row{flex-wrap:wrap}.alnbox .row .btn{margin-left:auto}}
+/* v1.7 AI deep word study */
+.ai .aimore{margin-top:10px;width:100%;justify-content:center}
+.say.mini{padding:2px 6px;min-height:0;vertical-align:middle;margin-left:4px}.say.mini svg{width:14px;height:14px}
+.modal.aimod{width:min(760px,96vw);max-height:90vh;padding:0 0 18px;overscroll-behavior:contain}
+.aimod-h{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 18px 10px;background:var(--pop);border-bottom:1px solid var(--line)}
+.aimod-h .row{flex-wrap:nowrap;gap:6px}
+.aimod-w{font-size:24px;font-weight:700;line-height:1.15;font-family:var(--read)}
+.aimod-sub{font-size:11.5px;padding:8px 18px 0}
+.modal.aimod #aideepcore,.modal.aimod>.aisec{padding:0 18px}
+.aibrief{margin-top:10px;padding:10px 12px;border-radius:12px;background:color-mix(in srgb,var(--accent) 9%,transparent);font-size:14.5px;line-height:1.6}
+.aictx{margin-top:8px;font-size:13.5px;display:flex;gap:8px;align-items:baseline}.aictx .tag{flex:none}
+.aisec{margin-top:14px}.aisec h4{margin:0 0 6px;font-size:13px;color:var(--accent);letter-spacing:.5px}
+.aisec ul{margin:4px 0;padding-left:18px;font-size:13.5px}
+.aisenses{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:7px;font-size:14px}
+.aisenses li>div:first-child{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.aisenses .faint,.aisenses .muted{font-size:12.5px;line-height:1.5}
+.aigrid2{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.aicell{padding:8px 10px;border-radius:10px;background:var(--soft);font-size:13px;display:flex;flex-direction:column;gap:2px}
+.aicell.wide{margin-bottom:8px}.aicell b{font-size:13.5px}.aicell span{color:var(--muted);line-height:1.5}
+.aicell .en,.aicoll .en{font-family:var(--read)}.aicell .zh{color:var(--muted);font-size:12.5px}
+.aicoll{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px}
+.aicoll>div{display:flex;flex-direction:column;padding:6px 10px;border-radius:10px;border:1px solid var(--line);font-size:13.5px}.aicoll .zh{font-size:12px;color:var(--muted)}
+.aisyn{display:flex;gap:10px;font-size:13.5px;padding:4px 0;border-bottom:1px dashed var(--line)}.aisyn b{flex:none;min-width:72px}.aisyn span{color:var(--muted)}
+.aiex{padding:12px;border-radius:14px;border:1px solid var(--line);background:var(--card);margin-bottom:10px}
+.aiexh{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;margin-bottom:6px}
+.aiexh .num{width:22px;height:22px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-size:12px;font-weight:700}
+.aiexh .say{margin-left:auto}
+.aiex .en{font-family:var(--read);font-size:15.5px;line-height:1.6}.aiex .zh{color:var(--muted);font-size:13.5px;margin-top:3px}
+.aiex mark,.ai mark,.aicell mark,.aicoll mark{background:color-mix(in srgb,var(--gold) 35%,transparent);color:inherit;border-radius:3px;padding:0 1px}
+.aigram{margin-top:8px;padding:8px 10px;border-radius:10px;background:var(--soft);font-size:13px;line-height:1.55}
+.aigram summary{cursor:pointer;font-weight:600;color:var(--accent);font-size:12.5px}
+.aigram ul{margin:4px 0 0;padding-left:18px}
+.aiload{display:flex;align-items:center;gap:8px;padding:12px;border-radius:12px;background:var(--soft);color:var(--muted);font-size:13px;margin-top:10px}
+.aiload svg{width:18px;height:18px;color:var(--accent);animation:aispin 1.4s linear infinite}
+@keyframes aispin{to{transform:rotate(360deg)}}
+.aimorebtn{width:100%;justify-content:center;min-height:44px}
+html[data-mode="S"] .modal.aimod{left:0;right:0;top:auto;bottom:0;transform:none;width:100%;max-height:92vh;min-height:72vh;border-radius:20px 20px 0 0;padding-bottom:calc(18px + env(safe-area-inset-bottom,0px))}
+html[data-mode="S"] .aigrid2,html[data-mode="S"] .aicoll{grid-template-columns:1fr}
+.modal.aimod{min-height:min(560px,80vh)}
