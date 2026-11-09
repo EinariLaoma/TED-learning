@@ -916,7 +916,7 @@ ${tmPrefs()}${PWA ? aiPrefs() : ""}${aiProfPrefs()}${PWA ? appPrefs() : ""}
 function appPrefs() {
   return `<div class="setrow" id="s-app"><div class="l"><b>App</b><span>版本 ${APP_VER} · ${isStandalone() ? "已安装到桌面" : "尚未安装"} · 联网时自动检查更新</span></div><div class="row">${isStandalone() ? "" : '<button class="btn sm" data-act="install">安装到桌面</button>'}<button class="btn sm ghost" data-act="chkupd">检查更新</button></div></div>`;
 }
-function readAiForm() { return { prov: $("#aiprov").value, base: $("#aibase").value.trim(), model: $("#aimodel").value.trim(), key: $("#aikey").value.trim() }; }
+
 
 /* ---------- popups ---------- */
 function sheet(head, body, o = {}) {
@@ -2602,13 +2602,7 @@ function alnPanelInner(aid) {
 
 /* ---------- v1.7: AI word study — one example in the word card, “更多” opens a deep-study window ---------- */
 
-function parseAIJson(t) {
-  t = String(t || "").replace(/^\s*```(?:json)?/i, "").replace(/```\s*$/, "");
-  const a = t.indexOf("{"), b = t.lastIndexOf("}");
-  const s = a >= 0 && b > a ? t.slice(a, b + 1) : t;
-  try { return JSON.parse(s); } catch (e) {}
-  try { return JSON.parse(s.replace(/,\s*([}\]])/g, "$1").replace(/[“”]/g, '"')); } catch (e) { throw { code: "parse", message: "返回内容不是有效 JSON" }; }
-}
+
 const aiJson = (prompt, o) => Cloud.sample.json(prompt, PWA ? Object.assign({ modelTier: o && o.big ? "default" : "quick" }, o || {}) : { modelTier: o && o.big ? "default" : "quick" });
 function aiHl(en, w) {
   const base = String(w || "").toLowerCase(), e = esc(en || ""); if (!base) return e;
@@ -2909,47 +2903,7 @@ function checkBadges() {
 }
 
 /* ===== 2. AI plumbing: chat + streaming ===== */
-function makeAI() {
-  const c = aiCfg(); if (!c.key) return null;
-  const fmt = (AI_PRESETS[c.prov] || AI_PRESETS.custom)[1];
-  const base = (c.base || "").replace(/\/+$/, "");
-  const req = async (msgs, o, stream) => {
-    const temp = o.temp != null ? o.temp : 0.3, maxT = o.maxTokens || 1500, m = msgs.map(x => ({ role: x.role, content: x.content }));
-    try {
-      if (fmt === "anthropic") return await fetch(base + "/v1/messages", { method: "POST", signal: o.signal, headers: { "content-type": "application/json", "x-api-key": c.key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }, body: JSON.stringify(Object.assign({ model: c.model, max_tokens: maxT, temperature: temp, messages: m }, o.system ? { system: o.system } : {}, stream ? { stream: true } : {})) });
-      return await fetch(base + "/chat/completions", { method: "POST", signal: o.signal, headers: { "content-type": "application/json", "authorization": "Bearer " + c.key }, body: JSON.stringify(Object.assign({ model: c.model, temperature: temp, max_tokens: maxT, messages: (o.system ? [{ role: "system", content: o.system }] : []).concat(m) }, stream ? { stream: true } : {})) });
-    } catch (e) { if (e && e.name === "AbortError") throw { code: "abort", message: "已停止" }; throw { code: "network", message: "网络不通或服务商不允许浏览器直连" }; }
-  };
-  const fail = async r => { let m = ""; try { const x = await r.json(); m = (x.error && (x.error.message || x.error.type)) || x.message || ""; } catch (e) {} throw { code: "http", message: "HTTP " + r.status + (m ? "：" + String(m).slice(0, 80) : "") }; };
-  const pick = j => fmt === "anthropic" ? (j.content || []).map(x => x.text || "").join("") : (((j.choices || [])[0] || {}).message || {}).content || "";
-  const run = async (input, o = {}) => {
-    const msgs = typeof input === "string" ? [{ role: "user", content: input }] : input;
-    if (o.onText) {
-      const r = await req(msgs, o, true); if (!r.ok) await fail(r);
-      const ct = (r.headers.get("content-type") || "");
-      if (!r.body || !r.body.getReader || /application\/json/.test(ct)) { const text = pick(await r.json()); o.onText({ text, delta: text }); return { text }; }
-      const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "", text = "";
-      try {
-        for (;;) {
-          const { value, done } = await rd.read(); if (done) break;
-          buf += dec.decode(value, { stream: true }); let i;
-          while ((i = buf.indexOf("\n")) >= 0) {
-            const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-            if (!line.startsWith("data:")) continue; const d = line.slice(5).trim(); if (!d || d === "[DONE]") continue;
-            let dl = ""; try { const j = JSON.parse(d); dl = fmt === "anthropic" ? (j.type === "content_block_delta" && j.delta && j.delta.text) || "" : ((((j.choices || [])[0] || {}).delta || {}).content) || ""; } catch (e) {}
-            if (dl) { text += dl; o.onText({ text, delta: dl }); }
-          }
-        }
-      } catch (e) { if (e && e.name === "AbortError") throw { code: "abort", message: "已停止", text }; throw { code: "network", message: "连接中断", text }; }
-      return { text };
-    }
-    const r = await req(msgs, o, false); if (!r.ok) await fail(r); return { text: pick(await r.json()) };
-  };
-  const f = (input, o) => run(input, o);
-  f.json = async (prompt, o) => parseAIJson((await run(prompt + "\n只输出 JSON 对象本身，不要代码块标记。", o || {})).text);
-  f.text = async (prompt, o) => (await run(prompt, o || {})).text;
-  return f;
-}
+
 async function aiAsk(msgs, o = {}) {
   const smp = Cloud.sample; if (!smp) throw { code: "nokey", message: "还没有设置 AI 服务" };
   if (PWA) return (await smp(msgs, o)).text;
@@ -3411,15 +3365,7 @@ function vReview() {
   const tab = REVIEW_TAB;
   return `<div class="seg wide" role="tablist" style="margin-bottom:14px"><button data-act="rtab" data-x="mem" class="${tab === "mem" ? "on" : ""}">记忆库 <span class="num faint">${Object.keys(VOC).length}</span>${due ? `<i class="tbdot num" style="position:static;margin-left:4px">${due}</i>` : ""}</button><button data-act="rtab" data-x="ai" class="${tab === "ai" ? "on" : ""}">${I.spark}AI 复习</button><button data-act="rtab" data-x="exam" class="${tab === "exam" ? "on" : ""}">考试</button></div>${tab === "mem" ? vMem() : tab === "ai" ? vAIRev() : vExam()}`;
 }
-function aiPrefs() {
-  const c = aiCfg();
-  return `<div class="setrow col" id="s-ai"><div class="l"><b>AI 解析服务（可选）</b><span>AI 例句、整句解析、AI 学伴、AI 复习都需要你自己的 API 密钥。密钥只保存在本设备，不会写入备份文件。部分服务商不允许浏览器直连，可点「测试」确认。</span></div>
-  <div class="aigrid"><label>服务商<select id="aiprov">${Object.entries(AI_PRESETS).map(([k, p]) => `<option value="${k}" ${c.prov === k ? "selected" : ""}>${p[0]}</option>`).join("")}</select></label>
-  <label>接口地址<input type="text" id="aibase" class="txt" value="${esc(c.base)}" placeholder="https://…" autocomplete="off" spellcheck="false"></label>
-  <label>模型<input type="text" id="aimodel" class="txt" value="${esc(c.model)}" autocomplete="off" spellcheck="false"></label>
-  <label>API 密钥<input type="password" id="aikey" class="txt" value="${esc(c.key)}" placeholder="sk-…" autocomplete="off"></label></div>
-  <div class="row"><button class="btn sm" data-act="aisave">保存</button><button class="btn sm ghost" data-act="aitest">测试</button>${c.key ? '<button class="btn sm warn" data-act="aiclear">清除密钥</button>' : ""}<span id="aimsg" class="muted" style="font-size:12.5px"></span></div></div>`;
-}
+
 function aiProfPrefs() { return `<div class="setrow col" id="s-aiprof"><div class="l"><b>AI 学习档案</b><span>所有 AI 功能都会按这里的水平和偏好来讲解、出题、造句</span></div>${aiProfHTML()}</div>`; }
 function tmPrefs() { const t = tmS(); return `<div class="setrow" id="s-plan"><div class="l"><b>学习计划</b><span>每周 ${t.plan.days} 天 · 每天 ${t.plan.mins} 分钟 · 点顶栏的计时按钮可修改并领取奖励</span></div><button class="btn sm ghost" data-act="timer">${I.timer}打开计时</button></div>`; }
 
@@ -3484,6 +3430,196 @@ document.addEventListener("keydown", e => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { if (e.target.id === "chatta") { e.preventDefault(); chatSend(e.target.value); } else if (e.target.id === "wta") { e.preventDefault(); writeSubmit(); } else if (e.target.id === "btta") { e.preventDefault(); btSubmit(); } }
   else if (e.key === "Enter" && !e.shiftKey && e.target.id === "chatta" && document.documentElement.dataset.mode === "L" && !e.isComposing) { e.preventDefault(); chatSend(e.target.value); }
 });
+
+/* ---------- v1.8.1: robust LLM calls (DeepSeek thinking mode, JSON mode, repair, retry) ---------- */
+
+
+
+
+/* tolerant JSON: strips think-tags/fences/prose, escapes stray quotes and raw newlines, closes truncated output */
+
+
+
+
+
+
+
+
+/* ---------- v1.8.1: robust LLM calls (DeepSeek thinking mode, JSON mode, repair, retry) ---------- */
+const AI_RT = { noRF: {}, noTh: {}, last: null };
+function aiExtra(c, json) {
+  const b = (c.base || "").toLowerCase(), x = {};
+  if (!c.think && !AI_RT.noTh[b]) {
+    if (/deepseek\.com/.test(b) || /bigmodel\.cn|open\.z\.ai|api\.z\.ai/.test(b)) x.thinking = { type: "disabled" };
+    else if (/dashscope|aliyuncs/.test(b)) x.enable_thinking = false;
+  }
+  if (json && !AI_RT.noRF[b]) x.response_format = { type: "json_object" };
+  return x;
+}
+function makeAI() {
+  const c = aiCfg(); if (!c.key) return null;
+  const fmt = (AI_PRESETS[c.prov] || AI_PRESETS.custom)[1];
+  const base = (c.base || "").replace(/\/+$/, ""), bk = base.toLowerCase();
+  const budget = (o) => { let n = o.maxTokens || 1500; if (o.json) n = Math.max(1500, Math.round(n * 1.6)); n = Math.min(8192, n); if (c.think) n = Math.min(32000, n + 8000); return n; };
+  const req = async (msgs, o, stream, extra) => {
+    const m = msgs.map(x => ({ role: x.role, content: x.content })), maxT = budget(o);
+    const temp = o.temp != null ? o.temp : 0.3;
+    try {
+      if (fmt === "anthropic") return await fetch(base + "/v1/messages", { method: "POST", signal: o.signal, headers: { "content-type": "application/json", "x-api-key": c.key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }, body: JSON.stringify(Object.assign({ model: c.model, max_tokens: maxT, temperature: temp, messages: m }, o.system ? { system: o.system } : {}, stream ? { stream: true } : {})) });
+      return await fetch(base + "/chat/completions", { method: "POST", signal: o.signal, headers: { "content-type": "application/json", "authorization": "Bearer " + c.key }, body: JSON.stringify(Object.assign({ model: c.model, temperature: temp, max_tokens: maxT, messages: (o.system ? [{ role: "system", content: o.system }] : []).concat(m) }, extra, stream ? { stream: true } : {})) });
+    } catch (e) { if (e && e.name === "AbortError") throw { code: "abort", message: "已停止" }; throw { code: "network", message: "网络不通或服务商不允许浏览器直连" }; }
+  };
+  /* send; if the provider rejects our optional params (JSON mode / thinking switch), remember that and retry without them */
+  const post = async (msgs, o, stream) => {
+    let extra = fmt === "openai" ? aiExtra(c, !!o.json) : {};
+    for (let i = 0; i < 3; i++) {
+      const r = await req(msgs, o, stream, extra);
+      if (r.ok || ![400, 422].includes(r.status) || !Object.keys(extra).length) return r;
+      let msg = ""; try { msg = JSON.stringify(await r.clone().json()).toLowerCase(); } catch (e) {}
+      const hasTh = "thinking" in extra || "enable_thinking" in extra;
+      if (hasTh && /thinking/.test(msg)) { AI_RT.noTh[bk] = 1; delete extra.thinking; delete extra.enable_thinking; continue; }
+      if (extra.response_format) { AI_RT.noRF[bk] = 1; delete extra.response_format; continue; }
+      if (hasTh) { AI_RT.noTh[bk] = 1; delete extra.thinking; delete extra.enable_thinking; continue; }
+      return r;
+    }
+    return req(msgs, o, stream, {});
+  };
+  const fail = async r => { let m = ""; try { const x = await r.json(); m = (x.error && (x.error.message || x.error.type)) || x.message || ""; } catch (e) {} throw { code: "http", message: "HTTP " + r.status + (r.status === 401 ? "：密钥无效" : r.status === 402 ? "：账户余额不足" : r.status === 429 ? "：请求太频繁或额度用完" : "") + (m ? "（" + String(m).slice(0, 80) + "）" : "") }; };
+  const pick = j => {
+    if (fmt === "anthropic") return { text: (j.content || []).filter(x => x.type === "text").map(x => x.text || "").join(""), finish: j.stop_reason === "max_tokens" ? "length" : j.stop_reason };
+    const ch = (j.choices || [])[0] || {}, msg = ch.message || {};
+    return { text: msg.content || "", finish: ch.finish_reason, thought: !!msg.reasoning_content };
+  };
+  const run = async (input, o = {}) => {
+    const msgs = typeof input === "string" ? [{ role: "user", content: input }] : input;
+    if (o.onText) {
+      const r = await post(msgs, o, true); if (!r.ok) await fail(r);
+      const ct = r.headers.get("content-type") || "";
+      if (!r.body || !r.body.getReader || /application\/json/.test(ct)) { const p = pick(await r.json()); o.onText({ text: p.text, delta: p.text }); return p; }
+      const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "", text = "", finish = "";
+      try {
+        for (;;) {
+          const { value, done } = await rd.read(); if (done) break;
+          buf += dec.decode(value, { stream: true }); let i;
+          while ((i = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+            if (!line.startsWith("data:")) continue; const d = line.slice(5).trim(); if (!d || d === "[DONE]") continue;
+            let dl = "";
+            try {
+              const j = JSON.parse(d);
+              if (fmt === "anthropic") { if (j.type === "content_block_delta" && j.delta && j.delta.type !== "thinking_delta") dl = j.delta.text || ""; }
+              else { const ch = (j.choices || [])[0] || {}; dl = (ch.delta || {}).content || ""; if (ch.finish_reason) finish = ch.finish_reason; }
+            } catch (e) {}
+            if (dl) { text += dl; o.onText({ text, delta: dl }); }
+          }
+        }
+      } catch (e) { if (e && e.name === "AbortError") throw { code: "abort", message: "已停止", text }; throw { code: "network", message: "连接中断", text }; }
+      return { text, finish };
+    }
+    const r = await post(msgs, o, false); if (!r.ok) await fail(r);
+    let j; try { j = await r.json(); } catch (e) { throw { code: "http", message: "服务商返回的不是标准格式，请检查接口地址" }; }
+    return pick(j);
+  };
+  const f = (input, o) => run(input, o || {});
+  f.json = async (prompt, o = {}) => {
+    let err = null, partial = null, mt = o.maxTokens || 1500;
+    for (let i = 0; i < 2; i++) {
+      const r = await run(prompt + "\n只输出一个 JSON 对象本身：不要代码块标记，不要任何解释；字符串里如需引号请用中文引号「」或转义 \\\"。", Object.assign({}, o, { json: true, maxTokens: mt }));
+      AI_RT.last = { at: Date.now(), finish: r.finish, len: (r.text || "").length, head: String(r.text || "").slice(0, 300) };
+      if (r.finish === "length" && i === 0) { try { partial = parseAIJson(r.text); } catch (e) {} mt = Math.min(8192, mt * 2); continue; }
+      try { return parseAIJson(r.text); }
+      catch (e) {
+        const empty = !String(r.text || "").trim();
+        err = { code: "parse", message: r.finish === "length" ? "输出太长被截断" : empty ? (r.thought ? "模型把额度都用在了深度思考上，没有给出正文" : "模型返回了空内容") : "返回内容不是有效 JSON" };
+        try { console.warn("[AI] JSON parse failed", r.finish, r.text); } catch (x) {}
+        if (r.finish === "length" || empty) mt = Math.min(8192, mt * 2);
+      }
+    }
+    if (partial) return partial;
+    throw err;
+  };
+  f.text = async (prompt, o) => (await run(prompt, o || {})).text;
+  return f;
+}
+
+/* tolerant JSON: strips think-tags/fences/prose, escapes stray quotes and raw newlines, closes truncated output */
+function jsonRepair(s) {
+  let out = "", inS = false, bs = false; const st = [];
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inS) {
+      if (bs) { out += ch; bs = false; continue; }
+      if (ch === "\\") { out += ch; bs = true; continue; }
+      if (ch === "\n") { out += "\\n"; continue; }
+      if (ch === "\r") continue;
+      if (ch === "\t") { out += "\\t"; continue; }
+      if (ch === '"') {
+        let j = i + 1; while (j < s.length && /\s/.test(s[j])) j++;
+        const nx = s[j];
+        if (j >= s.length || nx === "," || nx === ":" || nx === "}" || nx === "]") { inS = false; out += ch; }
+        else out += '\\"';
+        continue;
+      }
+      out += ch; continue;
+    }
+    if (ch === '"') { inS = true; out += ch; continue; }
+    if (ch === "{") st.push("}"); else if (ch === "[") st.push("]");
+    else if (ch === "}" || ch === "]") st.pop();
+    out += ch;
+  }
+  if (bs) out = out.slice(0, -1);
+  if (inS) out += '"';
+  out = out.replace(/\s+$/, "").replace(/,$/, "").replace(/:$/, ':""').replace(/,\s*"[^"]*"$/, "");
+  while (st.length) out += st.pop();
+  return out.replace(/,\s*([}\]])/g, "$1");
+}
+function jsonSpan(t, a) {
+  let d = 0, inS = false, bs = false;
+  for (let i = a; i < t.length; i++) {
+    const ch = t[i];
+    if (inS) { if (bs) bs = false; else if (ch === "\\") bs = true; else if (ch === '"') inS = false; continue; }
+    if (ch === '"') inS = true; else if (ch === "{") d++; else if (ch === "}") { d--; if (!d) return t.slice(a, i + 1); }
+  }
+  return t.slice(a);
+}
+function parseAIJson(t) {
+  t = String(t || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^[\s\S]*?<\/think>/i, "").replace(/```(?:json)?/gi, "").trim();
+  const ok = v => v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length;
+  const tries = [];
+  const a0 = t.indexOf("{"), b0 = t.lastIndexOf("}");
+  if (a0 >= 0) tries.push(b0 > a0 ? t.slice(a0, b0 + 1) : t.slice(a0));
+  let n = 0; for (let i = t.indexOf("{"); i >= 0 && n < 25; i = t.indexOf("{", i + 1), n++) tries.push(jsonSpan(t, i));
+  const fixes = [x => x, x => x.replace(/,\s*([}\]])/g, "$1"), jsonRepair, x => jsonRepair(x.replace(/[“”]/g, '"'))];
+  for (const s of tries) for (const f of fixes) { try { const v = JSON.parse(f(s)); if (ok(v)) return v; } catch (e) {} }
+  throw { code: "parse", message: "返回内容不是有效 JSON" };
+}
+
+function aiPrefs() {
+  const c = aiCfg();
+  return `<div class="setrow col" id="s-ai"><div class="l"><b>AI 解析服务（可选）</b><span>AI 例句、整句解析、AI 学伴、AI 复习都需要你自己的 API 密钥。密钥只保存在本设备，不会写入备份文件。部分服务商不允许浏览器直连，可点「测试」确认。</span></div>
+  <div class="aigrid"><label>服务商<select id="aiprov">${Object.entries(AI_PRESETS).map(([k, p]) => `<option value="${k}" ${c.prov === k ? "selected" : ""}>${p[0]}</option>`).join("")}</select></label>
+  <label>接口地址<input type="text" id="aibase" class="txt" value="${esc(c.base)}" placeholder="https://…" autocomplete="off" spellcheck="false"></label>
+  <label>模型<input type="text" id="aimodel" class="txt" value="${esc(c.model)}" autocomplete="off" spellcheck="false"></label>
+  <label>API 密钥<input type="password" id="aikey" class="txt" value="${esc(c.key)}" placeholder="sk-…" autocomplete="off"></label></div>
+  <label class="aithink"><input type="checkbox" id="aithink" ${c.think ? "checked" : ""}><span><b>允许深度思考</b>　默认关闭。DeepSeek、通义、智谱等模型的思考模式更慢、更耗额度，而且思考过程会占用输出长度；关闭后 App 会请求直接作答。</span></label>
+  <div class="row"><button class="btn sm" data-act="aisave">保存</button><button class="btn sm ghost" data-act="aitest">测试</button>${c.key ? '<button class="btn sm warn" data-act="aiclear">清除密钥</button>' : ""}<span id="aimsg" class="muted" style="font-size:12.5px"></span></div></div>`;
+}
+function readAiForm() { const th = $("#aithink"); return { prov: $("#aiprov").value, base: $("#aibase").value.trim(), model: $("#aimodel").value.trim(), key: $("#aikey").value.trim(), think: !!(th && th.checked) }; }
+async function aiTest() {
+  const c = readAiForm(), msg = $("#aimsg"); if (!c.key) { msg.textContent = "请先填写密钥"; return; }
+  LS.set("aicfg", c); Cloud.sample = makeAI(); AI_RT.noRF = {}; AI_RT.noTh = {};
+  msg.textContent = "测试中（按真实用法造一个例句并做语法分析）…"; const t0 = Date.now();
+  try {
+    const r = await Cloud.sample.json(`你是资深英语老师。为单词 "flourish" 造 1 个自然地道的英文例句，给出整句中文翻译，并用中文简要分析句子语法（主干、从句、短语）。严格输出 JSON：{"en":"英文例句","zh":"整句中文翻译","gram":"语法分析（中文）"}`, { temp: 0.7, maxTokens: 400 });
+    if (!r || !r.en || !r.zh) throw { code: "parse", message: "返回 JSON 缺少字段" };
+    const b = (c.base || "").toLowerCase(), notes = [];
+    notes.push(AI_RT.noRF[b] ? "该服务商不支持 JSON 模式，已用容错解析" : "JSON 模式已启用");
+    if (/deepseek\.com|dashscope|aliyuncs|bigmodel\.cn|z\.ai/.test(b)) notes.push(c.think ? "深度思考：开启" : AI_RT.noTh[b] ? "该模型无法关闭思考" : "深度思考：已关闭");
+    msg.textContent = `连接成功，耗时 ${((Date.now() - t0) / 1000).toFixed(1)} 秒（${notes.join("，")}）。例句：${r.en}`;
+  } catch (e) {
+    msg.textContent = aiErr(e) + (AI_RT.last && AI_RT.last.head ? "　原始返回开头：" + AI_RT.last.head.slice(0, 120) : "");
+  }
+}
 
 /* ---------- events ---------- */
 let resetArmed = false;
@@ -3576,7 +3712,7 @@ document.addEventListener("click", e => {
     case "bkout": exportBackup(); break;
     case "aisave": { const c = readAiForm(); LS.set("aicfg", c); Cloud.sample = makeAI(); $("#aimsg").textContent = c.key ? "已保存" : "已保存（未填密钥，AI 功能关闭）"; break; }
     case "aiclear": { const c = readAiForm(); c.key = ""; LS.set("aicfg", c); Cloud.sample = null; render(); toast("已清除密钥"); break; }
-    case "aitest": { const c = readAiForm(); if (!c.key) { $("#aimsg").textContent = "请先填写密钥"; break; } LS.set("aicfg", c); Cloud.sample = makeAI(); $("#aimsg").textContent = "测试中…"; Cloud.sample.json('请输出 {"ok":true,"word":"flourish","zh":"繁荣"}').then(r => { $("#aimsg").textContent = r && r.ok ? "连接成功，AI 补充已开启" : "已连通，但返回格式异常"; }).catch(e => { $("#aimsg").textContent = aiErr(e); }); break; }
+    case "aitest": aiTest(); break;
     case "readmod": S.rmod = S.rmod || {}; S.rmod[ds.id] = +ds.i; openRead(ds.id); break;
     case "homeaudio": READ_ID = S.cur.art; audioPanel(S.cur.art); break;
     case "import": closeModal(true); importSheet(ds.id || READ_ID); break;

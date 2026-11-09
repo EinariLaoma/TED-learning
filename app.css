@@ -766,3 +766,6 @@ html[data-mode="S"] .tmplan .setrow .l{width:100%}
 .hubbody{padding-bottom:calc(16px + env(safe-area-inset-bottom,0px))}
 .hubbody.t-chat{padding-bottom:0}
 .chatdock{padding-bottom:calc(8px + env(safe-area-inset-bottom,0px))}
+.aithink{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:var(--muted);margin:8px 0;line-height:1.5}
+.aithink input{margin-top:3px;flex:none;width:16px;height:16px;accent-color:var(--accent)}
+.aithink b{color:var(--ink)}
