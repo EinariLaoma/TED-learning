@@ -769,3 +769,30 @@ html[data-mode="S"] .tmplan .setrow .l{width:100%}
 .aithink{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:var(--muted);margin:8px 0;line-height:1.5}
 .aithink input{margin-top:3px;flex:none;width:16px;height:16px;accent-color:var(--accent)}
 .aithink b{color:var(--ink)}
+/* ---------- v1.9 ---------- */
+.lsbar{background:color-mix(in srgb,var(--rose) 18%,var(--card))!important}
+.banner.warnb{border:1px solid color-mix(in srgb,var(--gold) 55%,transparent);background:var(--gold-soft)}
+.fcard{position:relative}
+.fcard .ftype{position:absolute;top:10px;left:12px;font-size:11px;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--muted)}
+.fcard .fcl{font-family:var(--read);font-size:17px;line-height:1.7;text-align:left}
+.fcard .blank{color:var(--accent);letter-spacing:1px}
+.fcard .fsprow{flex-wrap:nowrap;width:100%;max-width:340px}
+.fcard #fsp{flex:1;min-width:0;font-size:18px;text-align:center;font-family:var(--read)}
+.fcard .fres{font-size:13px;padding:2px 10px;border-radius:999px}
+.fcard .fres.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.fcard .fres.no{background:color-mix(in srgb,var(--rose) 14%,transparent);color:var(--rose)}
+.dictp{grid-column:1/-1}
+.dictp .row{margin-bottom:8px}
+.dictp #dta{width:100%;font-family:var(--read);font-size:16px}
+.tmhalf{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:12px;background:var(--gold-soft);margin:8px 0}
+.tmhalf>div{display:flex;flex-direction:column;gap:2px;font-size:13px}
+.tmhalf .btn{flex:none}
+#printroot{display:none}
+@media print{
+  html.printing body>*:not(#printroot){display:none!important}
+  html.printing #printroot{display:block}
+  html.printing,html.printing body{background:#FFFFFF!important}
+  #printroot .pp{width:auto;height:auto;overflow:visible;padding:0}
+  #printroot .pw{break-inside:avoid}
+  @page{margin:14mm}
+}

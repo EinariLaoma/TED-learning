@@ -59,7 +59,7 @@ function freshState() {
     set: { fs: 18, skin: "auto", voice: "us", rate: 0.92, font: "yahei", motion: true } };
 }
 let S = freshState(), VOC = {}, SEN = {}, AIC = {};
-const LS = { get(k) { try { return JSON.parse(localStorage.getItem("tedjd:" + k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem("tedjd:" + k, JSON.stringify(v)); } catch (e) {} } };
+const LS = { get(k) { try { return JSON.parse(localStorage.getItem("tedjd:" + k)); } catch (e) { return null; } }, set(k, v) { let s; try { s = JSON.stringify(v); localStorage.setItem("tedjd:" + k, s); return true; } catch (e) { if (s != null && lsFree(s.length)) { try { localStorage.setItem("tedjd:" + k, k === "ai" ? JSON.stringify(AIC) : s); return true; } catch (e2) {} } if (s != null) lsFull(); return false; } } };
 const Cloud = { db: null, base: null, sample: null, downloads: null, user: null, name: "", ready: false };
 const safeId = k => k.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 80) + "_" + (k.length % 97);
 let saveT = null;
@@ -71,10 +71,7 @@ function save() {
 function putVoc(key) { LS.set("voc", VOC); if (Cloud.db) Cloud.db.doc(Cloud.base + "/vocab/" + safeId(key)).set(VOC[key]).catch(() => {}); }
 function putSen(id) { LS.set("sen", SEN); if (Cloud.db) Cloud.db.doc(Cloud.base + "/sents/" + id).set(SEN[id]).catch(() => {}); }
 function putAI(id) { LS.set("ai", AIC); if (Cloud.db) Cloud.db.doc(Cloud.base + "/ai/" + id).set({ v: AIC[id] }).catch(() => {}); }
-function loadLocal() {
-  const s = LS.get("state"); if (s && s.v === 1) S = Object.assign(freshState(), s, { set: Object.assign(freshState().set, s.set || {}) });
-  VOC = LS.get("voc") || {}; SEN = LS.get("sen") || {}; AIC = LS.get("ai") || {}; if (FULL) { TR = LS.get("tr") || {}; ITEMS = LS.get("items") || {}; migrateV13(); } else if (S.cur.art && !isUser(S.cur.art)) S.cur.art = null;
-}
+
 async function initCloud() {
   if (PWA) { initPWA(); return; }
   let tries = 0;
@@ -115,25 +112,7 @@ const INSTALL = { evt: null, reg: null };
 const isStandalone = () => { try { return matchMedia("(display-mode: standalone)").matches || matchMedia("(display-mode: window-controls-overlay)").matches || navigator.standalone === true; } catch (e) { return false; } };
 const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const isMobile = () => isIOS() || /Android/i.test(navigator.userAgent);
-function initPWA() {
-  document.documentElement.classList.toggle("standalone", isStandalone());
-  Cloud.sample = makeAI();
-  setTimeout(() => { ensureDict().then(() => renderChrome()).catch(() => {}); }, 1200);
-  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
-  if ("serviceWorker" in navigator && location.protocol !== "file:") {
-    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(reg => {
-      INSTALL.reg = reg;
-      if (reg.waiting && navigator.serviceWorker.controller) showUpdate();
-      reg.addEventListener("updatefound", () => { const w = reg.installing; if (w) w.addEventListener("statechange", () => { if (w.state === "installed" && navigator.serviceWorker.controller) showUpdate(); }); });
-      document.addEventListener("visibilitychange", () => { if (!document.hidden) reg.update().catch(() => {}); });
-    }).catch(() => {});
-    let reloading = false;
-    navigator.serviceWorker.addEventListener("controllerchange", () => { if (reloading) return; reloading = true; location.reload(); });
-  }
-  window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); INSTALL.evt = e; if (VIEW === "home" || VIEW === "prefs") render(); });
-  window.addEventListener("appinstalled", () => { INSTALL.evt = null; toast("已安装，可以从桌面图标打开了"); render(); });
-  renderChrome();
-}
+
 function showUpdate() {
   if ($("#updbar")) return;
   const b = document.createElement("div"); b.id = "updbar"; b.className = "updbar";
@@ -147,14 +126,7 @@ async function checkUpdate(btn) {
   try { await r.update(); } catch (e) {}
   setTimeout(() => { btn.disabled = false; btn.textContent = "检查更新"; if (!r.waiting && !r.installing) toast("已是最新版本 " + APP_VER); }, 1500);
 }
-function installCard() {
-  if (!PWA) {
-    if (!PWA_URL) return "";
-    return `<div class="banner install" style="margin-bottom:12px"><div class="row" style="gap:12px;flex-wrap:nowrap"><img src="${PWA_URL}icons/icon-192.png" alt="" class="appico"><div><b>TED 精读已有 App 版</b><div class="muted" style="font-size:12.5px">可装到手机主屏幕和电脑桌面，离线可用。先在「设置」导出备份，再在 App 里导入，进度就能带过去。</div></div></div><a class="btn" href="${PWA_URL}" target="_blank" rel="noopener">打开 App 版</a></div>`;
-  }
-  if (isStandalone() || LS.get("instDismiss")) return "";
-  return `<div class="banner install" style="margin-bottom:12px"><div class="row" style="gap:12px;flex-wrap:nowrap"><img src="icons/icon-192.png" alt="" class="appico"><div><b>把 TED 精读装到${isMobile() ? "手机主屏幕" : "电脑桌面"}</b><div class="muted" style="font-size:12.5px">像 App 一样全屏打开、离线可用，学习记录保存在本机。</div></div></div><div class="row"><button class="btn ghost sm" data-act="instno">不再提示</button><button class="btn" data-act="install">安装</button></div></div>`;
-}
+
 const SHARE_IC = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg>';
 async function doInstall() {
   if (INSTALL.evt) { const e = INSTALL.evt; INSTALL.evt = null; e.prompt(); try { const r = await e.userChoice; if (r.outcome === "accepted") return; } catch (x) {} return; }
@@ -186,7 +158,7 @@ function aiErr(e) {
 
 /* ---------- backup / sync between devices ---------- */
 function backupObj() { return { app: "ted-jingdu", v: 1, at: Date.now(), from: PWA ? "app" : "claude", S, VOC, SEN, AIC, ITEMS: FULL ? ITEMS : undefined, TR: FULL ? JSON.parse(JSON.stringify(TR, (k, v) => k === "audio" ? null : v)) : undefined }; }
-async function exportBackup() { await saveFile("TED精读_备份_" + todayK() + ".json", new Blob([JSON.stringify(backupObj())], { type: "application/json" })); }
+
 function mergeBackup(b) {
   if (FULL && b.ITEMS) Object.values(b.ITEMS).forEach(m => { if (m && m.id && isUser(m.id) && !ITEMS[m.id] && b.TR && b.TR[m.id]) { ITEMS[m.id] = m; TR[m.id] = Object.assign(b.TR[m.id], { audio: null }); regItem(m); } });
   const L = S, Rm = Object.assign(freshState(), b.S);
@@ -391,13 +363,7 @@ function onWordClick(e) {
   lastTap = s.dataset.s;
   clickT = setTimeout(() => { clickT = null; openWord(READ_ID, +s.dataset.s, +w.dataset.t, w, s.dataset.m); }, 260);
 }
-function recordWord(key, aid, si, m) {
-  const now = Date.now(); const v = VOC[key];
-  if (v) { v.n++; v.l = now; } else { VOC[key] = { k: key, a: aid, s: si, n: 1, t: now, l: now, box: 0, due: todayK() }; if (m === "t") VOC[key].m = "t"; }
-  putVoc(key); markStudy(); checkBadges();
-  $$(".w").forEach(el => { const sEl = el.closest(".sent"); if (!sEl || !READ_ID) return; const ss = getS(READ_ID, +sEl.dataset.s, sEl.dataset.m); const t = ss && ss.toks[+el.dataset.t]; if (t && t[1] === key) el.classList.add("seen"); });
-  renderChrome();
-}
+
 function recordSent(aid, si, m) {
   const id = (m === "t" ? "T_" : "") + aid + "_" + si; const now = Date.now();
   if (SEN[id]) { SEN[id].n++; SEN[id].l = now; } else { SEN[id] = { a: aid, s: si, n: 1, t: now, l: now }; if (m === "t") SEN[id].m = "t"; }
@@ -418,7 +384,7 @@ function wordInfoHTML(key, aid, si, ti, m) {
   }).join("");
   const keyBlk = K ? `<div class="blk"><h4>用法</h4><div style="font-size:14px">${esc(K.use)}</div><div class="exs" style="margin-top:6px"><div class="ex"><div class="en">${hl(K.ex, L.w)}</div><div class="zh">${esc(K.exZh)}</div><div class="from">例句</div></div></div></div>` : "";
   const aiId = "w_" + safeId(key) + "_" + (aid || "").slice(0, 6) + (m === "t" ? "t" : "") + si;
-  const aiBlk = !aid ? "" : AIC[aiId] ? aiWordHTML(AIC[aiId], key, aid, si, m) : (Cloud.sample ? `<button class="btn sm ghost" style="margin-top:12px" data-act="aiword" data-k="${esc(key)}" data-a="${aid}" data-s="${si}" data-m="${m || ""}">${I.spark}AI 例句</button><div id="aiw"></div>` : PWA ? `<button class="btn sm ghost" style="margin-top:12px" data-act="go" data-v="prefs" data-a="s-ai">${I.spark}开启 AI 例句（需在设置中填写密钥）</button>` : "");
+  const aiBlk = AIC[aiId] ? aiWordHTML(AIC[aiId], key, aid, si, m) : (Cloud.sample ? `<button class="btn sm ghost" style="margin-top:12px" data-act="aiword" data-k="${esc(key)}" data-a="${aid || ""}" data-s="${si}" data-m="${m || ""}">${I.spark}AI 例句</button><div id="aiw"></div>` : PWA ? `<button class="btn sm ghost" style="margin-top:12px" data-act="go" data-v="prefs" data-a="s-ai">${I.spark}开启 AI 例句（需在设置中填写密钥）</button>` : "");
   return `<div class="row" style="align-items:baseline"><span class="wd">${esc(L.w)}</span>${L.ph ? `<span class="ph">/${esc(L.ph)}/</span>` : ""}</div>
   <div class="row" style="margin-top:6px"><button class="say" data-act="say" data-text="${esc(L.w)}" data-acc="us">${I.vol}美音</button><button class="say" data-act="say" data-text="${esc(L.w)}" data-acc="uk">${I.vol}英音</button>${tok && tok[3] ? `<span class="tag">${esc(tok[3])}</span>` : ""}${(L.tags || []).slice(0, 5).map(t => `<span class="tag g">${t}</span>`).join("")}</div>
   ${formLine}
@@ -430,13 +396,7 @@ function wordInfoHTML(key, aid, si, ti, m) {
   ${aiBlk}`;
 }
 
-function openWord(aid, si, ti, el, m) {
-  const s = getS(aid, si, m), tok = s.toks[ti], key = tok[1]; if (!key) return;
-  $$(".w.act").forEach(x => x.classList.remove("act")); if (el) el.classList.add("act");
-  if (!key.startsWith("~")) recordWord(key, aid, si, m);
-  sheet(`<div class="t"><b>单词详解</b></div>`, wordInfoHTML(key, aid, si, ti, m), { kind: "float", anchor: el });
-  say(lx(key) ? lx(key).w : tok[0], S.set.voice, true);
-}
+
 function openWordFromMem(key) {
   const v = VOC[key]; const s = vSent(v); sheet(`<div class="t"><b>单词详解</b></div>`, wordInfoHTML(key, v ? v.a : null, v ? v.s : 0, s ? s.toks.findIndex(t => t[1] === key) : null, v && v.m), { kind: "float" });
 }
@@ -452,7 +412,7 @@ function sentHTML(aid, si, m) {
   const verbs = an.verbs.map(v => `<tr><td style="font-family:var(--read)"><b>${esc(v.form)}</b></td><td>${esc(v.role)}</td><td>${esc(v.tense)}</td><td>${esc(v.voice)}</td></tr>`).join("");
   const nf = an.nf.map(n => `<tr><td style="font-family:var(--read)"><b>${esc(n.word)}</b></td><td>${esc(n.type)}</td><td>${esc(n.fn)}</td><td style="font-family:var(--read)">${esc(n.text)}</td></tr>`).join("");
   const aiId = "s_" + aid + "_" + (m === "t" ? "t" : "") + si;
-  const audBtns = T ? (T.audio ? `<div class="row" style="margin-top:8px"><button class="btn sm" data-act="segplay" data-g="${si}">${I.play}原声播放这句</button><button class="btn sm ghost" data-act="loopsent" data-g="${si}">单句循环</button><button class="btn sm ghost" data-act="calib" data-g="${si}" title="音频正读到这句开头时点">这句从此刻开始</button></div>` : `<div class="row" style="margin-top:8px"><button class="btn sm ghost" data-act="audiopanel">${I.ear}导入现场原声</button></div>`) : "";
+  const audBtns = T ? (T.audio ? `<div class="row" style="margin-top:8px"><button class="btn sm" data-act="segplay" data-g="${si}">${I.play}原声播放这句</button><button class="btn sm ghost" data-act="loopsent" data-g="${si}">单句循环</button><button class="btn sm ghost" data-act="calib" data-g="${si}" title="音频正读到这句开头时点">这句从此刻开始</button></div>` : `<div class="row" style="margin-top:8px"><button class="btn sm ghost" data-act="audiopanel" data-id="${aid}">${I.ear}导入现场原声</button></div>`) : "";
   return `<div class="ansent">${toks}</div>${audBtns}
   <div class="legend" style="margin-top:6px"><span><i style="background:var(--s)"></i>主语</span><span><i style="background:var(--v)"></i>谓语</span><span><i style="background:var(--o)"></i>宾语/表语</span><span><i style="background:color-mix(in srgb,var(--c) 30%,transparent)"></i>从句</span></div>
   <div class="row" style="margin-top:10px"><button class="say" data-act="say" data-text="${esc(s.en)}" data-acc="us">${I.vol}美音朗读</button><button class="say" data-act="say" data-text="${esc(s.en)}" data-acc="uk">${I.vol}英音朗读</button><span class="tag">${esc(an.kind)}</span><span class="tag ${an.passive ? "r" : ""}">${an.passive ? "含被动语态" : "主动语态"}</span>${an.inv ? '<span class="tag g">倒装</span>' : ""}</div>
@@ -590,14 +550,7 @@ function drawQuiz() {
   ${body}<div class="acts">${q.sub ? '<button class="btn" data-act="close">完成</button>' : '<button class="btn ghost" data-act="close">退出</button><button class="btn" data-act="qsubmit">交卷</button>'}</div>`, { wide: true });
 }
 function ring(p) { const r = 34, c = 2 * Math.PI * r; return `<svg class="ring" viewBox="0 0 84 84"><circle cx="42" cy="42" r="${r}" fill="none" stroke="var(--bg2)" stroke-width="8"/><circle cx="42" cy="42" r="${r}" fill="none" stroke="var(--accent)" stroke-width="8" stroke-linecap="round" stroke-dasharray="${c * p} ${c}" transform="rotate(-90 42 42)"/><text x="42" y="47" text-anchor="middle" font-size="16" font-weight="700" fill="var(--ink)">${Math.round(p * 100)}%</text></svg>`; }
-function submitQuiz() {
-  const q = QZ; $$("input[data-qi]").forEach(i => q.ans[+i.dataset.qi] = i.value);
-  let sc = 0; q.qs.forEach((x, i) => { if (x.type === "spell" ? (q.ans[i] || "").trim().toLowerCase() === x.ans : q.ans[i] === x.a) sc++; });
-  q.sub = true; q.score = sc; markStudy();
-  let redraw = true;
-  if (q.onDone) { const r = q.onDone(sc, q.qs.length); if (r === false) redraw = false; else if (r) q.resultText = r; }
-  if (redraw) drawQuiz();
-}
+
 async function startExam(kind, n) {
   if (FULL && Object.keys(TR).length) { try { await ensureFull(); } catch (e) {} }
   const qs = genExam(kind === "final" ? "final" : "week");
@@ -644,35 +597,11 @@ function vExam() {
 /* ---------- views: memory ---------- */
 function dueCards() { const t = todayK(); return Object.values(VOC).filter(v => lx(v.k) && (!v.due || v.due <= t)); }
 let MEMSORT = "recent";
-function vMem() {
-  const vs = Object.values(VOC).filter(v => lx(v.k));
-  vs.sort(MEMSORT === "az" ? (a, b) => a.k.localeCompare(b.k) : MEMSORT === "freq" ? (a, b) => b.n - a.n : (a, b) => b.l - a.l);
-  const ss = Object.entries(SEN).filter(([, v]) => AMAP[v.a] && (v.m !== "t" || hasTR(v.a))).sort((a, b) => b[1].l - a[1].l);
-  const due = dueCards().length;
-  return `<div class="sechead"><h2>记忆库</h2><span class="muted">单词 ${vs.length} · 句子 ${ss.length}</span></div>
-  <div class="panel row" style="justify-content:space-between" id="s-flash"><div><b>今日待复习 ${due} 个</b><div class="muted" style="font-size:12.5px">间隔复习：认识的词会在 1、2、4、7、15 天后再出现</div></div><button class="btn" data-act="flash" ${due ? "" : "disabled"}>开始强化复习</button></div>
-  <div id="flashbox"></div>
-  <div class="sec" id="s-words"><div class="sechead"><h2>单词</h2><div class="seg"><button class="${MEMSORT === "recent" ? "on" : ""}" data-act="msort" data-m="recent">最近</button><button class="${MEMSORT === "freq" ? "on" : ""}" data-act="msort" data-m="freq">次数</button><button class="${MEMSORT === "az" ? "on" : ""}" data-act="msort" data-m="az">A–Z</button></div></div>
-  ${vs.length ? `<div class="wlist">${vs.map(v => { const L = lx(v.k); return `<button class="witem" data-act="memword" data-k="${esc(v.k)}"><span class="top"><b>${esc(L.w)}</b><span class="faint" style="font-size:12px">/${esc(L.ph)}/</span></span><span class="m">${esc((L.tr[0] || "").slice(0, 34))}</span><span class="f">${esc(AMAP[v.a] ? AMAP[v.a].titleZh : "")} · 点击 ${v.n} 次 · 熟练度 ${v.box || 0}/5</span></button>`; }).join("")}</div>` : '<div class="empty">阅读时点击不认识的单词，它们会自动收进这里。</div>'}</div>
-  <div class="sec" id="s-sents"><div class="sechead"><h2>句子</h2></div>
-  ${ss.length ? `<div class="slist">${ss.map(([id, v]) => { const s = getS(v.a, v.s, v.m); if (!s) return ""; return `<button class="sitem" data-act="memsent" data-a="${v.a}" data-s="${v.s}" data-m="${v.m || ""}">${esc(s.en)}${s.zh && !s.zhPara ? `<div class="zh">${esc(s.zh)}</div>` : `<div class="zh">${esc(AMAP[v.a].titleZh)} · 精读全文</div>`}</button>`; }).join("")}</div>` : '<div class="empty">双击或长按句子中的单词，句子解析会保存在这里。</div>'}</div>`;
-}
+
 let FL = null;
-function startFlash() { const d = shuffle(dueCards()); if (!d.length) { toast("今天没有待复习的单词"); return; } FL = { list: d, i: 0, flip: false }; drawFlash(); }
-function drawFlash() {
-  const box = $("#flashbox"); if (!box || !FL) return;
-  if (FL.i >= FL.list.length) { box.innerHTML = `<div class="panel" style="margin-top:12px;text-align:center"><b>本轮复习完成</b><p class="muted">复习了 ${FL.list.length} 个单词。</p></div>`; FL = null; renderChrome(); return; }
-  const v = FL.list[FL.i], L = lx(v.k), a = AMAP[v.a], s = a ? vSent(v) : null;
-  box.innerHTML = `<div class="flash" style="margin-top:12px"><div class="faint num" style="text-align:center;font-size:12px;margin-bottom:6px">${FL.i + 1} / ${FL.list.length}</div>
-  <div class="fcard" data-act="flip">${FL.flip ? `<div class="wd">${esc(L.w)}</div><div class="ph">/${esc(L.ph)}/</div><div>${L.tr.slice(0, 3).map(esc).join("<br>")}</div>${s ? `<div class="ex" style="text-align:left;margin-top:6px"><div class="en">${esc(s.en)}</div>${s.zh && !s.zhPara ? `<div class="zh">${esc(s.zh)}</div>` : ""}</div>` : ""}` : `<div class="wd">${esc(L.w)}</div><button class="say" data-act="say" data-text="${esc(L.w)}">${I.vol}发音</button><div class="faint">点击卡片查看释义</div>`}</div>
-  ${FL.flip && aiOK() ? `<div id="flex"></div><div class="flexrow"><button class="btn sm ghost" data-act="flex">${I.spark}AI 新例句</button></div>` : ""}
-  ${FL.flip ? `<div class="fbtns"><button class="btn warn" data-act="fl" data-r="0">不认识</button><button class="btn ghost" data-act="fl" data-r="1">模糊</button><button class="btn" data-act="fl" data-r="2">认识</button></div>` : ""}</div>`;
-}
-function rateFlash(r) {
-  const v = FL.list[FL.i]; const iv = [0, 1, 2, 4, 7, 15];
-  if (r === 0) { v.box = 0; v.due = todayK(); } else if (r === 1) { v.due = addDays(todayK(), 1); } else { v.box = Math.min(5, (v.box || 0) + 1); v.due = addDays(todayK(), iv[v.box]); }
-  VOC[v.k] = v; putVoc(v.k); markStudy(); FL.i++; FL.flip = false; drawFlash();
-}
+
+
+
 
 /* ---------- views: rewards ---------- */
 
@@ -705,7 +634,7 @@ function vPractice() {
     <div class="row"><button class="btn ghost" data-act="sorig">${I.vol}${live ? "听现场原声" : "听原声"}</button><button class="btn" data-act="srec" id="srec">${I.mic}开始录音</button><label class="btn ghost sm" style="position:relative;overflow:hidden">上传录音<input type="file" accept="audio/*" capture id="supload" style="position:absolute;inset:0;opacity:0"></label></div>
     <canvas class="wave" id="wave" width="600" height="56"></canvas>
     <div id="sresult"></div>
-  </div></div>`;
+  </div>${FULL || !isUser(PR_ID) ? dictPanel() : ""}</div>`;
 }
 let SCOPE = "s";
 function spRange() {
@@ -784,25 +713,7 @@ async function toggleRec() {
   mr.start(); REC = mr; $("#srec").innerHTML = '<span class="recdot"></span> 停止录音'; markStudy();
 }
 let MYURL = null;
-function gotRecording(blob, transcript, secs) {
-  if (MYURL) URL.revokeObjectURL(MYURL); MYURL = URL.createObjectURL(blob);
-  const target = speakTarget(); const words = target.split(/\s+/).length;
-  S.stats.speak++; save(); checkBadges();
-  let diff = "";
-  if (transcript) {
-    const norm = s => s.toLowerCase().replace(/[^a-z0-9'\s-]/g, " ").split(/\s+/).filter(Boolean);
-    const A = norm(target), B = norm(transcript); const n = A.length, m = B.length; const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    let i = 0, j = 0; const out = []; while (i < n && j < m) { if (A[i] === B[j]) { out.push(`<span class="ok">${A[i]}</span>`); i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push(`<span class="miss">${A[i]}</span>`); i++; } else { out.push(`<span class="extra">${B[j]}</span>`); j++; } }
-    while (i < n) out.push(`<span class="miss">${A[i++]}</span>`); while (j < m) out.push(`<span class="extra">${B[j++]}</span>`);
-    const acc = Math.round(dp[0][0] / Math.max(1, n) * 100);
-    diff = `<div class="blk"><h4>发音识别比对（准确率 ${acc}%）</h4><div class="diff">${out.join(" ")}</div><div class="legend"><span style="color:var(--ok)">绿色：读对</span><span style="color:var(--rose)">删除线：漏读/读错</span><span style="color:var(--gold)">斜体：多读或识别为其他词</span></div></div>`;
-  } else diff = `<div class="faint" style="font-size:12px;margin-top:8px">当前环境不支持语音识别，可通过下方对比播放自己判断差异。</div>`;
-  const myWpm = secs ? Math.round(words / secs * 60) : null;
-  $("#sresult").innerHTML = `<div class="cmp" style="margin-top:8px"><div>你的录音<b>${secs ? secs.toFixed(1) + " 秒" : "已载入"}</b>${myWpm ? myWpm + " 词/分" : ""}</div><div>原文朗读参考<b id="origdur">—</b><span id="origwpm"></span></div></div>
-  <audio id="myaudio" src="${MYURL}" controls style="width:100%;margin-top:8px"></audio>
-  <div class="row" style="margin-top:6px"><button class="btn sm" data-act="ab">先听我的，再听原声</button><button class="btn sm ghost" data-act="sorig">只听原声</button></div>${diff}`;
-}
+
 function playOrig(after) {
   if (VIEW === "practice" && PR_SRC === "t" && hasTR(PR_ID) && TR[PR_ID].audio) {
     const [x, y] = spRange(); audioLoad(PR_ID).then(() => { const el = audioEl(); const go2 = () => { const d = sEnd(y) - sStart(x); const od = $("#origdur"); if (od) { od.textContent = d.toFixed(1) + " 秒（现场）"; $("#origwpm").textContent = Math.round(speakTarget().split(/\s+/).length / d * 60) + " 词/分"; } el.currentTime = sStart(x); AUD.segEnd = sEnd(y); AUD.segCb = after || null; AUD.bar = true; el.play().catch(() => {}); drawBar(); }; if (el.readyState >= 1) go2(); else el.addEventListener("loadedmetadata", go2, { once: true }); });
@@ -813,14 +724,7 @@ function playOrig(after) {
 }
 
 /* ---------- export ---------- */
-function vExport() {
-  const nv = Object.keys(VOC).filter(k => lx(k)).length, ns = Object.keys(SEN).length;
-  return `<div class="sechead"><h2>导出</h2></div>
-  <div class="grid2">
-   <div class="panel" id="s-pdf"><h3>导出 PDF（详细学习笔记）</h3><p class="muted" style="font-size:13px">包含学习概况、每个点学单词的音标、词性、释义、词形与原文例句，以及每个分析过句子的翻译、主干、从句、时态语态和特殊用法标注。</p><div class="row"><span class="tag">单词 ${nv}</span><span class="tag">句子 ${ns}</span></div><button class="btn" style="margin-top:10px" data-act="pdf" ${nv + ns ? "" : "disabled"}>${I.out}生成 PDF</button></div>
-   <div class="panel" id="s-xlsx"><h3>导出 Excel（单词表）</h3><p class="muted" style="font-size:13px">只导出点学过的单词：单词、音标、词性与释义、英文释义、词形变化、出处文章、原文例句与翻译、点击次数、首次学习日期、熟练度。</p><button class="btn" style="margin-top:10px" data-act="xlsx" ${nv ? "" : "disabled"}>${I.out}生成 Excel</button></div>
-  </div><div id="expmsg" class="muted" style="margin-top:12px;font-size:13px"></div>`;
-}
+
 const LIBS = PWA ? { jspdf: "vendor/jspdf.umd.min.js", h2c: "vendor/html2canvas.min.js", xlsx: "vendor/xlsx.full.min.js", nlp: "vendor/compromise.min.js", pdf: "vendor/pdf.min.js" } : { jspdf: "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js", h2c: "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js", xlsx: "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" };
 const loaded = {};
 function loadLib(k) { if (loaded[k]) return loaded[k]; loaded[k] = new Promise((res, rej) => { const s = document.createElement("script"); s.src = LIBS[k]; s.onload = res; s.onerror = () => { loaded[k] = null; rej(new Error("load")); }; document.head.appendChild(s); }); return loaded[k]; }
@@ -847,7 +751,7 @@ async function exportXlsx() {
   if (FULL) { try { await ensureFull(); } catch (e) {} }
   try { await loadLib("xlsx"); } catch (e) { msg.textContent = PWA ? "表格组件加载失败，请刷新应用后重试。" : "表格组件加载失败，请检查网络后重试。"; return; }
   const rows = Object.values(VOC).filter(v => lx(v.k)).sort((a, b) => a.t - b.t).map(v => { const L = lx(v.k), a = AMAP[v.a], s = a ? vSent(v) : null;
-    return { "单词": L.w, "音标": L.ph ? "/" + L.ph + "/" : "", "词性与释义": L.tr.join("；"), "英文释义": (L.def || [])[0] || "", "词形变化": Object.entries(L.ex || {}).map(([k, x]) => k + ":" + x).join(" "), "考试标签": (L.tags || []).join(" "), "出处文章": a ? a.title + "（" + a.titleZh + "）" : "", "原文例句": s ? s.en : "", "例句翻译": s ? (s.zhPara ? (s.zh ? "【本段译文】" + s.zh : "") : s.zh) : "", "点击次数": v.n, "首次学习": fmtDate(v.t), "熟练度": (v.box || 0) + "/5" }; });
+    return { "单词": L.w, "音标": L.ph ? "/" + L.ph + "/" : "", "词性与释义": L.tr.join("；"), "英文释义": (L.def || [])[0] || "", "词形变化": Object.entries(L.ex || {}).map(([k, x]) => k + ":" + x).join(" "), "考试标签": (L.tags || []).join(" "), "出处文章": a ? a.title + "（" + a.titleZh + "）" : "", "原文例句": s ? s.en : "", "例句翻译": s ? (s.zhPara ? (s.zh ? "【本段译文】" + s.zh : "") : s.zh) : "", "点击次数": v.n, "首次学习": fmtDate(v.t), "熟练度": (v.box || 0) + "/7" }; });
   const ws = XLSX.utils.json_to_sheet(rows); ws["!cols"] = [14, 16, 40, 40, 30, 20, 34, 60, 40, 8, 12, 8].map(w => ({ wch: w }));
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "单词表");
   const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
@@ -859,33 +763,11 @@ async function renderPagesToPdf(pages, name, landscape) {
   const W = pdf.internal.pageSize.getWidth(), H = pdf.internal.pageSize.getHeight();
   const root = $("#pdfroot"); root.classList.add("rendering"); const sy = window.scrollY;
   try {
-    for (let i = 0; i < pages.length; i++) { const c = await html2canvas(pages[i], { scale: 2, backgroundColor: "#FFFFFF", logging: false, scrollX: 0, scrollY: -sy, windowWidth: Math.max(1200, document.documentElement.clientWidth) }); if (i) pdf.addPage(); pdf.addImage(c.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, W, H); }
+    for (let i = 0; i < pages.length; i++) { const c = await html2canvas(pages[i], { scale: 1.5, backgroundColor: "#FFFFFF", logging: false, scrollX: 0, scrollY: -sy, windowWidth: Math.max(1200, document.documentElement.clientWidth) }); if (i) pdf.addPage(); pdf.addImage(c.toDataURL("image/jpeg", 0.78), "JPEG", 0, 0, W, H); }
   } finally { root.classList.remove("rendering"); }
   await saveFile(name, pdf.output("blob"));
 }
-async function exportPdf() {
-  const msg = $("#expmsg"); msg.textContent = "正在排版 PDF…";
-  if (FULL) { try { await ensureFull(); } catch (e) {} }
-  const root = $("#pdfroot"); root.innerHTML = "";
-  const items = [];
-  const vs = Object.values(VOC).filter(v => lx(v.k)).sort((a, b) => a.t - b.t);
-  const ss = Object.values(SEN).filter(v => AMAP[v.a] && (v.m !== "t" || hasTR(v.a))).sort((a, b) => a.t - b.t);
-  items.push(`<h1>TED 精读学习笔记</h1><div style="color:#5A6B62;margin:4px 0 14px">导出日期 ${todayK()} · 已完成 ${S.done.length}/20 篇 · 点学单词 ${vs.length} 个 · 分析句子 ${ss.length} 句 · 连续学习 ${streak()} 天 · Lv.${levelOf(S.xp).i}</div>`);
-  if (S.done.length) items.push(`<h2>已完成文章</h2>` + S.done.map(d => `<div>· ${esc(AMAP[d.a].title)}（${esc(AMAP[d.a].titleZh)}）— ${d.d}</div>`).join(""));
-  if (vs.length) { items.push("<h2>一、单词详注</h2>"); vs.forEach((v, i) => { const L = lx(v.k), a = AMAP[v.a], s = a ? vSent(v) : null, K = a && a.keys[v.k];
-    items.push(`<div class="pw"><b>${i + 1}. ${esc(L.w)}</b> <span style="color:#5A6B62">/${esc(L.ph)}/</span> ${(L.tags || []).slice(0, 4).map(t => `<span style="font-size:10px;color:#B3801F">${t}</span>`).join(" ")}<div>${L.tr.map(esc).join("；")}</div>${Object.keys(L.ex || {}).length ? `<div style="color:#5A6B62;font-size:11px">${Object.entries(L.ex).map(([k, x]) => k + " " + esc(x)).join(" · ")}</div>` : ""}${K ? `<div><b>用法</b>：${esc(K.use)}<br><i>${esc(K.ex)}</i> ${esc(K.exZh)}</div>` : ""}${s ? `<div style="margin-top:3px"><b>原文</b>：${esc(s.en)}<br><span style="color:#5A6B62">${s.zhPara ? (s.zh ? "【本段译文】" + esc(s.zh) : "") : esc(s.zh)}</span></div>` : ""}<div style="color:#8A9A91;font-size:10.5px">出处：${esc(a ? a.titleZh : "")} · 点击 ${v.n} 次 · ${fmtDate(v.t)}</div></div>`); }); }
-  if (ss.length) { items.push("<h2>二、句子解析</h2>"); ss.forEach((v, i) => { const a = AMAP[v.a], s = vSent(v), an = s && s.an; if (!an) return;
-    items.push(`<div class="pw"><b>${i + 1}.</b> ${esc(s.en)}<div style="color:#5A6B62">${s.zhPara ? (s.zh ? "【本段译文】" + esc(s.zh) : "") : esc(s.zh)}</div><div class="an">句型：${esc(an.kind)}${an.passive ? " · 含被动" : ""}${an.inv ? " · 倒装" : ""}　主干：<span style="color:#2B5FA0">${esc(an.skel.S)}</span> | <span style="color:#B4433A">${esc(an.skel.V)}</span>${an.skel.O ? " | <span style='color:#2F7D47'>" + esc(an.skel.O) + "</span>" : ""}</div>${an.clauses.map(c => `<div class="an">· ${esc(c.type)}：${esc(c.text)}${c.detail ? "（" + esc(c.detail) + "）" : ""}</div>`).join("")}<div class="an">谓语：${an.verbs.map(x => esc(x.form) + "（" + esc(x.tense) + "，" + esc(x.voice) + "）").join("；")}</div>${an.nf.length ? `<div class="an">非谓语：${an.nf.map(x => esc(x.word) + "（" + esc(x.type) + "作" + esc(x.fn) + "）").join("；")}</div>` : ""}${an.notes.map(n => `<div class="an" style="color:#8A6413">★ ${esc(n)}</div>`).join("")}${AIC["s_" + v.a + "_" + v.s] && AIC["s_" + v.a + "_" + v.s].structure ? `<div class="an">AI：${esc(AIC["s_" + v.a + "_" + v.s].structure)}</div>` : ""}<div style="color:#8A9A91;font-size:10.5px">出处：${esc(a.titleZh)}${v.m === "t" ? " · 精读全文" : ""}</div></div>`); }); }
-  // paginate
-  const pages = []; let page = null, used = 0; const LIM = 1123 - 56 - 80;
-  const newPage = () => { page = document.createElement("div"); page.className = "pp"; root.appendChild(page); pages.push(page); used = 0; };
-  newPage();
-  for (const h of items) { const d = document.createElement("div"); d.innerHTML = h; page.appendChild(d); const hgt = d.offsetHeight + 4; if (used + hgt > LIM && used > 0) { page.removeChild(d); newPage(); page.appendChild(d); used = d.offsetHeight + 4; } else used += hgt; }
-  pages.forEach((p, i) => { const f = document.createElement("div"); f.className = "ft"; f.innerHTML = `<span>TED 精读计划 · 学习笔记</span><span>${i + 1} / ${pages.length}</span>`; p.appendChild(f); });
-  try { msg.textContent = `正在渲染 ${pages.length} 页…`; await renderPagesToPdf(pages, "TED精读_学习笔记_" + todayK() + ".pdf"); msg.textContent = ""; }
-  catch (e) { msg.textContent = PWA ? "PDF 组件加载失败，请刷新应用后重试。" : "PDF 组件加载失败，请检查网络后重试。"; }
-  root.innerHTML = "";
-}
+
 async function exportCert() {
   const root = $("#pdfroot"); root.innerHTML = `<div class="cert"><div style="letter-spacing:6px;color:#8A6413">CERTIFICATE OF COMPLETION</div><div style="font-size:40px;font-weight:700">TED 精读结业证书</div><div style="font-size:18px">授予</div><div style="font-size:32px;font-weight:700;border-bottom:2px solid #C99A2E;padding:0 40px 6px">${esc(S.set.name || Cloud.name || "学习者")}</div>
   <div style="font-size:16px;max-width:760px;line-height:1.8">完成 20 篇 TED 主题精读，点学单词 ${Object.keys(VOC).length} 个，分析句子 ${Object.keys(SEN).length} 句，并以 ${S.final ? S.final.sc + "/" + S.final.tot : ""} 的成绩通过终极考试，获得「精读大师」称号。</div><div style="color:#6E6247">${todayK()}</div></div>`;
@@ -904,8 +786,8 @@ function vPrefs() {
    <div class="setrow"><div class="l"><b>发音</b><span>查词与通读默认口音</span></div><div class="seg"><button class="${S.set.voice === "us" ? "on" : ""}" data-act="acc" data-a="us">美式</button><button class="${S.set.voice === "uk" ? "on" : ""}" data-act="acc" data-a="uk">英式</button></div></div>
    <div class="setrow"><div class="l"><b>动效</b><span>奖励彩带、火焰与卡片流光</span></div><button class="switch ${S.set.motion ? "on" : ""}" data-act="motion" aria-label="动效开关"></button></div>
    <div class="setrow"><div class="l"><b>你的名字</b><span>显示在结业证书上</span></div><input type="text" id="nmin" class="txt" maxlength="20" placeholder="${esc(Cloud.name || "学习者")}" value="${esc(S.set.name || "")}"></div>
-   <div class="setrow"><div class="l"><b>数据存储</b><span>${PWA ? "保存在本设备，断网也能用。手机和电脑之间用下方「备份 / 导入」互传" : Cloud.db ? "已登录，学习记录云端保存，手机和电脑打开同一链接即可同步" : "保存在本机浏览器；清除浏览器数据会丢失进度"}</span></div></div>
-   <div class="setrow" id="s-backup"><div class="l"><b>备份与迁移</b><span>导出一个 .json 文件，在另一台设备${PWA ? "或 Claude 网页版" : "或 App 版"}里导入，进度会自动合并</span></div><div class="row"><button class="btn sm ghost" data-act="bkout">导出备份</button><label class="btn sm" style="position:relative;overflow:hidden">导入备份<input type="file" id="bkfile" accept=".json,application/json" style="position:absolute;inset:0;opacity:0"></label></div></div>
+   <div class="setrow"><div class="l"><b>数据存储</b><span>${PWA ? "保存在本设备，断网也能用（已用约 " + Math.min(100, Math.round(lsUsage() / 50000)) + "% 本地空间）。手机和电脑之间用下方「备份 / 导入」互传" : Cloud.db ? "已登录，学习记录云端保存，手机和电脑打开同一链接即可同步" : "保存在本机浏览器；清除浏览器数据会丢失进度"}</span></div></div>
+   <div class="setrow" id="s-backup"><div class="l"><b>备份与迁移</b><span>导出一个 .json 文件，在另一台设备${PWA ? "或 Claude 网页版" : "或 App 版"}里导入，进度会自动合并${PWA ? "。存储快满时，删除不再学的精读（连同原文）最能腾出空间" : ""}</span></div><div class="row"><button class="btn sm ghost" data-act="bkout">导出备份</button><label class="btn sm" style="position:relative;overflow:hidden">导入备份<input type="file" id="bkfile" accept=".json,application/json" style="position:absolute;inset:0;opacity:0"></label></div></div>
    <div class="setrow"><div class="l"><b>本周起始日</b><span>${S.cur.weekStart}（第一次打开的那天起算，每 7 天一周）</span></div></div>
 ${tmPrefs()}${PWA ? aiPrefs() : ""}${aiProfPrefs()}${PWA ? appPrefs() : ""}
    <div class="setrow"><div class="l"><b>重置全部进度</b><span>清空单词、句子、奖励与考试记录</span></div><button class="btn sm warn" data-act="reset1">重置</button></div>
@@ -1619,7 +1501,7 @@ function vReward() {
     <div class="panel"><div class="streak">${flameSVG}<div><div class="big">${st} 天</div><div class="muted">连续学习倍率</div></div></div>
       <div class="mult">${[[1, 1, "起步"], [3, 1.2, "3 天"], [7, 1.5, "7 天"], [14, 2, "14 天"], [30, 3, "30 天"]].map(([d, x, l]) => `<div class="${m === x ? "on" : ""}"><b>×${x}</b>${l}</div>`).join("")}</div></div>
   </div>
-  <div class="sec" id="s-cards"><div class="sechead"><h3>精读卡</h3><span class="muted">${jd.length} / 20 · 终极考试目标</span></div>
+  ${freezeHTML()}<div class="sec" id="s-cards"><div class="sechead"><h3>精读卡</h3><span class="muted">${jd.length} / 20 · 终极考试目标</span></div>
   ${jd.length ? `<div class="cards">${jd.map(d => cardHTML(AMAP[d.a], S.cards[d.a] || 0)).join("")}</div>` : `<div class="empty">完成第一篇精读后，这里会出现第一张精读卡。</div>`}</div>
   <div class="sec"><div class="sechead"><h3>短篇主题卡</h3><span class="muted">${shortDone().length}/20</span></div>
   <p class="muted" style="font-size:12.5px;margin-top:-4px">每完成一篇得一张卡。连续 3 天以上得「稀有」，7 天「史诗」，14 天「传说」；测验满分再升一级。</p>
@@ -1846,15 +1728,7 @@ async function finishQuiz() {
     return "答对 " + sc + "/" + tot + "，需答对 " + Math.ceil(tot * 0.6) + " 题才算完成。看看解析，回顾原文后再试一次";
   } });
 }
-function itemDelete(id) {
-  delete ITEMS[id]; delete TR[id]; delete TXC[id]; delete AMAP[id];
-  ["tprog", "mdone", "rmod"].forEach(f => { if (S[f]) delete S[f][id]; });
-  if (S.cur.art === id) S.cur.art = null; if (S.nextPick === id) S.nextPick = null;
-  S.abandoned = S.abandoned.filter(x => x !== id); S.done = S.done.filter(x => x.a !== id);
-  Object.keys(SEN).forEach(k => { if (SEN[k].a === id) delete SEN[k]; });
-  idbDel(id).catch(() => {}); idbDel(id + "#asr").catch(() => {}); ALN.q = ALN.q.filter(x => x !== id); if (ALN.job && ALN.job.aid === id) ALN.job.cancel = true; if (AUD.aid === id) audioUnload();
-  saveTR(); saveItems(); LS.set("sen", SEN); save();
-}
+
 
 /* ---------- import: files, paste, TED transcripts ---------- */
 
@@ -2250,20 +2124,7 @@ function vImp() {
 
 /* ---------- v1.5: page history + swipe right anywhere to go back ---------- */
 const NAV_STACK = []; let NAV_CUR = null, NAV_BACKING = false;
-function go(v, anchor) {
-  if (ALIAS[v]) { anchor = anchor || ALIAS[v][1]; v = ALIAS[v][0]; }
-  if (!VIEWNAMES.has(v)) v = "home";
-  if (v === "read" && (!READ_ID || !AMAP[READ_ID])) READ_ID = S.cur.art || ARTS[0].id;
-  if (v === "review" && anchor) REVIEW_TAB = EXAM_ANCH.has(anchor) ? "exam" : "mem";
-  if (tabOf(v) && !isSubView(v)) LAST_TAB = v;
-  const prev = Object.assign({}, NAV_CUR || { v: VIEW, r: VIEW === "read" ? READ_ID : null, rt: REVIEW_TAB }, { y: window.scrollY });
-  VIEW = v; closeMenus(); closeSheet(); if (!modalLock) closeModal(true);
-  try { history.replaceState(null, "", "#" + v); } catch (e) {}
-  NAV_CUR = { v, r: v === "read" ? READ_ID : null, rt: REVIEW_TAB };
-  if (!NAV_BACKING && prev && (prev.v !== NAV_CUR.v || prev.r !== NAV_CUR.r)) { NAV_STACK.push(prev); if (NAV_STACK.length > 40) NAV_STACK.shift(); }
-  render(); window.scrollTo(0, 0);
-  if (anchor) setTimeout(() => doSub(v, anchor), 30);
-}
+
 function navTarget() {
   while (NAV_STACK.length) { const e = NAV_STACK[NAV_STACK.length - 1]; if (e.v === "read" && (!e.r || !AMAP[e.r])) { NAV_STACK.pop(); continue; } return e; }
   if (isSubView(VIEW)) return { v: VIEW === "read" ? (isUser(READ_ID) ? "jing" : "short") : VIEW === "imp" ? "jing" : LAST_TAB, fallback: true };
@@ -2347,15 +2208,8 @@ function alnWorker() {
   w.onerror = e => { Object.values(ALN.wait).forEach(p => p.rej(new Error("识别组件加载失败" + (e && e.message ? "：" + e.message : "")))); ALN.wait = {}; ALN.w = null; };
   return (ALN.w = w);
 }
-function alnCall(msg, ms) {
-  const k = msg.type === "load" ? "load" : (msg.id = ++ALN.seq);
-  return new Promise((res, rej) => {
-    const to = setTimeout(() => { delete ALN.wait[k]; rej(new Error("timeout")); }, ms || 180000);
-    ALN.wait[k] = { res: v => { clearTimeout(to); res(v); }, rej: er => { clearTimeout(to); rej(er); } };
-    alnWorker().postMessage(msg, msg.pcm ? [msg.pcm.buffer] : []);
-  });
-}
-function alnReset() { if (ALN.w) { try { ALN.w.terminate(); } catch (e) {} } ALN.w = null; ALN.wait = {}; }
+
+
 async function decodePCM(blob) {
   const buf = await blob.arrayBuffer();
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
@@ -2616,16 +2470,7 @@ function aiOneHTML(r, key, aid, si, m) {
   return `<div class="ai"><b>AI 补充</b>${r.ctx ? `<div>语境义：${esc(r.ctx)}</div>` : ""}${r.use ? `<div style="margin-top:4px">${esc(r.use)}</div>` : ""}${(r.coll || []).length ? `<div style="margin-top:4px">搭配：${r.coll.map(esc).join("；")}</div>` : ""}${(r.ex || []).slice(0, 1).map(e => `<div class="ex" style="margin-top:6px"><div class="en">${aiHl(e.en, key)}</div><div class="zh">${esc(e.zh)}</div></div>`).join("")}${more}</div>`;
 }
 function aiWordHTML(r, key, aid, si, m) { if (!r) return ""; return aiOneHTML(r, key || r.key || "", aid || r.aid || "", si != null ? si : r.si || 0, m != null ? m : r.m || ""); }
-async function aiWord(key, aid, si, m) {
-  const box = $("#aiw"); const btn = $("[data-act=aiword]"); if (btn) btn.disabled = true; if (box) box.innerHTML = '<div class="ai muted">正在生成例句…</div>';
-  const s = getS(aid, si, m); const L = lx(key) || { w: key };
-  try {
-    const r = await aiJson(`你是资深英语老师。学习者在下面这句英文中点击了单词 "${L.w}"。请为这个词造 1 个全新的、自然地道、长度适中的英文例句（不要照抄原句，用法与原句语境中的含义一致），并给出准确的整句中文翻译。严格输出 JSON：{"one":{"en":"英文例句","zh":"整句中文翻译"}}\n原句：${s.en}`, { temp: 0.7, maxTokens: 400 });
-    if (!r || !r.one || !r.one.en) throw { code: "parse", message: "返回内容缺少例句" };
-    const id = "w_" + safeId(key) + "_" + aid.slice(0, 6) + (m === "t" ? "t" : "") + si; r.key = key; r.aid = aid; r.si = si; r.m = m || ""; AIC[id] = r; putAI(id);
-    if (box) box.innerHTML = aiOneHTML(r, key, aid, si, m); if (btn) btn.remove();
-  } catch (e) { if (box) box.innerHTML = `<div class="ai muted">${esc(aiErr(e))}</div>`; if (btn) btn.disabled = false; }
-}
+
 
 /* deep-study window */
 const DEEP = { key: null, busy: {} };
@@ -2765,38 +2610,14 @@ function tmEndRun(t) {
   let got = 0; while (t.pool >= TM_BLOCK) { t.pool -= TM_BLOCK; tmPush("f"); got++; }
   if (got) setTimeout(() => toast("碎片时间累计满 15 分钟，半额奖励已可领取"), 200);
 }
-function tmWhy(now) {
-  const t = tmS();
-  if (document.hidden) return "后台";
-  if (t.pause) return "手动暂停";
-  if (TM_SKIP.has(VIEW)) return "本页不计时";
-  if (AUD.el && !AUD.el.paused) return "";
-  if (PLAY && PLAY.on) return "";
-  if (REC) return "";
-  if (now - TM.input > TM_IDLE * 1000) return "无操作";
-  return "";
-}
+
 function tmCheckGoals(t) {
   const k = todayK(), g = tmGoal();
   if ((t.day[k] || 0) >= g && !t.paid["g" + k]) { t.paid["g" + k] = 1; tmPush("g"); setTimeout(() => toast("今日学习目标达成，奖励已可领取"), 200); }
   const w = tmWeek(k);
   if (w.met >= t.plan.days && !t.paid["w" + w.s]) { t.paid["w" + w.s] = 1; tmPush("w"); setTimeout(() => { toast("本周学习计划完成！奖励已可领取"); confetti(80); }, 400); }
 }
-function tmTick() {
-  const now = Date.now(), dt = TM.last ? Math.min(2, Math.max(0, (now - TM.last) / 1000)) : 0; TM.last = now;
-  const t = tmS();
-  if (t.run && now - t.run.last > TM_GAP * 1000) { tmEndRun(t); save(); }
-  TM.why = tmWhy(now); TM.act = !TM.why;
-  if (TM.act && dt > 0) {
-    if (!t.run) t.run = { s: now, last: now, act: 0, b: 0 };
-    const k = todayK();
-    t.run.act += dt; t.run.last = now; t.day[k] = (t.day[k] || 0) + dt; t.tot += dt; t.best = Math.max(t.best, t.run.act);
-    while (t.run.act >= (t.run.b + 1) * TM_BLOCK) { t.run.b++; tmPush("c", t.run.b); toast(t.run.b === 1 ? "连续学习满 15 分钟，奖励已可领取" : `连续第 ${t.run.b} 个 15 分钟，专注加成 ×${tmCombo(t.run.b)}`); }
-    tmCheckGoals(t);
-    if (now - TM.saveAt > 20000) { TM.saveAt = now; tmPrune(t); save(); }
-  }
-  tmPaint();
-}
+
 function tmPrune(t) {
   const ks = Object.keys(t.day).sort(); if (ks.length > 150) ks.slice(0, ks.length - 150).forEach(k => delete t.day[k]);
   const ps = Object.keys(t.paid); if (ps.length > 120) ps.sort((a, b) => a.slice(1).localeCompare(b.slice(1))).slice(0, ps.length - 120).forEach(k => delete t.paid[k]);
@@ -2820,16 +2641,7 @@ function tmPaint() {
   const lv = $("#tmlive"); if (lv) { const h = tmLiveHTML(); if (h !== TM.live) { TM.live = h; lv.innerHTML = h; } }
 }
 function tmBtnHTML() { TM.btn = ""; return `<button class="tmbtn" id="tmbtn" data-act="timer" aria-label="学习计时">${tmBtnInner()}</button>`; }
-function tmStart() {
-  if (TM.iv) return;
-  const bump = () => { TM.input = Date.now(); };
-  ["pointerdown", "keydown", "wheel", "touchstart"].forEach(ev => document.addEventListener(ev, bump, { capture: true, passive: true }));
-  window.addEventListener("scroll", bump, { capture: true, passive: true });
-  document.addEventListener("visibilitychange", () => { TM.last = Date.now(); if (document.hidden) save(); else { TM.input = Date.now(); tmTick(); } });
-  window.addEventListener("pagehide", () => save());
-  const t = tmS(); if (t.run && Date.now() - t.run.last > TM_GAP * 1000) { tmEndRun(t); save(); }
-  TM.last = Date.now(); TM.iv = setInterval(tmTick, 1000);
-}
+
 function tmClaim() {
   const t = tmS(); if (!t.pend.length) return;
   let xp = 0, co = 0; t.pend.forEach(p => { xp += p.xp; co += p.co; t.cnt[p.t] = (t.cnt[p.t] || 0) + 1; });
@@ -2837,20 +2649,7 @@ function tmClaim() {
   toast(`已领取：+${xp} XP · +${co} 金币`); confetti(90); tmDraw();
 }
 const TM_NAME = { c: "连续学习 15 分钟", f: "碎片累计 15 分钟", g: "今日目标达成", w: "本周计划达成" };
-function tmLiveHTML() {
-  const t = tmS(), k = todayK(), today = t.day[k] || 0, g = tmGoal(), r = t.run, w = tmWeek(k);
-  const pg = Math.min(1, today / g), C = 2 * Math.PI * 52;
-  const st = TM.act ? "计时中" : "已暂停 · " + TM.why;
-  const runLeft = r ? TM_BLOCK - (r.act % TM_BLOCK) : TM_BLOCK, nextN = r ? r.b + 1 : 1;
-  const pend = t.pend;
-  const sum = pend.reduce((a, p) => [a[0] + p.xp, a[1] + p.co], [0, 0]);
-  return `<div class="tmhero"><svg class="tmbig" viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="b0"/><circle cx="60" cy="60" r="52" class="b1" stroke-dasharray="${(C * pg).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 60 60)"/><text x="60" y="58" text-anchor="middle" class="v num">${Math.floor(today / 60)}</text><text x="60" y="78" text-anchor="middle" class="u">/ ${t.plan.mins} 分钟</text></svg>
-   <div class="tmstats"><div><span class="faint">状态</span><b class="${TM.act ? "ok" : ""}">${esc(st)}</b></div><div><span class="faint">本次连续</span><b class="num">${r ? mmss(r.act) : "—"}</b></div><div><span class="faint">碎片累计</span><b class="num">${mmss(t.pool)} / 15:00</b></div><div><span class="faint">本周达标</span><b class="num">${w.met} / ${t.plan.days} 天</b></div></div></div>
-  <div class="tmbar"><div class="row"><b>连续进度</b><span class="faint num">${r ? `再学 ${mmss(runLeft)} → 第 ${nextN} 段${nextN > 1 ? " ×" + tmCombo(nextN) : ""}` : "开始学习即开始一段新的连续计时"}</span></div><div class="bar"><i style="width:${r ? Math.round((r.act % TM_BLOCK) / TM_BLOCK * 100) : 0}%"></i></div></div>
-  <div class="tmbar gold"><div class="row"><b>碎片进度</b><span class="faint">中断后剩余的零散时间，累计满 15 分钟得半额奖励</span></div><div class="bar gold"><i style="width:${Math.round(t.pool / TM_BLOCK * 100)}%"></i></div></div>
-  <div class="tmrew">${pend.length ? `<div class="tmrl">${Object.entries(pend.reduce((m, p) => { const key = p.t + (p.t === "c" ? p.n : ""); (m[key] = m[key] || { p, k: 0, xp: 0, co: 0 }); m[key].k++; m[key].xp += p.xp; m[key].co += p.co; return m; }, {})).map(([, v]) => `<div class="tmri ${v.p.t}"><span class="ic">${v.p.t === "f" ? "½" : v.p.t === "c" ? "15" : v.p.t === "g" ? I.flag : I.trophy}</span><div><b>${TM_NAME[v.p.t]}${v.p.t === "c" && v.p.n > 1 ? ` · 第 ${v.p.n} 段 ×${tmCombo(v.p.n)}` : ""}</b>${v.k > 1 ? `<span class="faint"> × ${v.k}</span>` : ""}</div><span class="num">+${v.xp} XP · +${v.co}</span></div>`).join("")}</div>
-   <button class="btn tmclaim" data-act="tmclaim">${I.gift}领取全部奖励（+${sum[0]} XP · +${sum[1]} 金币）</button>` : `<div class="faint" style="font-size:12.5px;text-align:center;padding:6px 0">暂无可领取的奖励。连续学满 15 分钟，或碎片时间累计满 15 分钟，就能领取。</div>`}</div>`;
-}
+
 function tmWeekHTML() {
   const t = tmS(), w = tmWeek(), g = tmGoal(), k = todayK(), mx = Math.max(g * 1.3, ...w.days.map(d => d.sec));
   return `<div class="tmweek">${w.days.map((d, i) => { const h = Math.round(d.sec / mx * 100), ok = d.sec >= g; return `<div class="col ${d.k === k ? "today" : ""} ${ok ? "ok" : ""}"><span class="num v">${Math.round(d.sec / 60) || ""}</span><div class="bx"><i style="height:${h}%"></i><em style="bottom:${Math.round(g / mx * 100)}%"></em></div><span>${"一二三四五六日"[i]}</span></div>`; }).join("")}</div>
@@ -2861,22 +2660,7 @@ function tmPlanHTML() {
   return `<div class="tmplan"><div class="setrow"><div class="l"><b>每周学习天数</b><span>达标天数满足计划即得周奖励</span></div><div class="seg tmdays">${[1, 2, 3, 4, 5, 6, 7].map(n => `<button class="${t.plan.days === n ? "on" : ""}" data-act="tmdays" data-n="${n}">${n}</button>`).join("")}</div></div>
   <div class="setrow"><div class="l"><b>每天学习时长</b><span>单位：分钟</span></div><div class="seg tmmins">${[15, 20, 30, 45, 60, 90, 120].map(n => `<button class="${t.plan.mins === n ? "on" : ""}" data-act="tmmins" data-n="${n}">${n}</button>`).join("")}</div></div></div>`;
 }
-function tmDraw() {
-  const box = $("#tmbody"); if (!box) return; const t = tmS();
-  TM.live = "";
-  box.innerHTML = `<div id="tmlive">${tmLiveHTML()}</div>
-  <div class="aisec"><h4>本周</h4><div id="tmwk">${tmWeekHTML()}</div></div>
-  <div class="aisec"><h4>学习计划</h4>${tmPlanHTML()}</div>
-  <details class="aisec tmrules"><summary>奖励与计时规则</summary>
-   <table class="tbl"><tr><th>奖励单位</th><th>条件</th><th>奖励</th></tr>
-   <tr><td>连续 15 分钟</td><td>一次不中断地学满 15 分钟，每满 15 分钟一份</td><td>+20 XP · +2 金币</td></tr>
-   <tr><td>专注加成</td><td>同一次连续学习的第 2 / 3 / 4 段起</td><td>×1.2 / ×1.4 / ×1.5，第 3 段起金币 +1</td></tr>
-   <tr><td>碎片 15 分钟（最小单位）</td><td>中断后剩下的零散时间累计满 15 分钟</td><td>半额：+10 XP · +1 金币</td></tr>
-   <tr><td>每日达标</td><td>当天学习时长达到每日目标</td><td>+30 XP · +5 金币</td></tr>
-   <tr><td>每周计划</td><td>本周（周一至周日）达标天数达到计划天数</td><td>+120 XP · +20 金币</td></tr></table>
-   <ul class="faint" style="font-size:12px;margin:8px 0 0;padding-left:18px"><li>App 在前台、且 2 分钟内有操作（点、滑、打字）或正在播放音频/录音时计时；2 分钟没有操作自动暂停。</li><li>暂停或切到后台不超过 2 分钟，回来后仍算同一次连续学习；超过 2 分钟即中断，这一次不足 15 分钟的部分转入碎片累计。</li><li>设置、导出、成就、导入页面不计时。奖励需要手动领取，不会过期。</li></ul></details>
-  <div class="row" style="justify-content:center;margin-top:12px"><button class="btn sm ghost" data-act="tmpause">${t.pause ? I.play + "继续计时" : I.pause + "暂停计时"}</button></div>`;
-}
+
 function tmOpen() {
   modal(`<div class="aimod-h"><div class="row" style="gap:10px"><span class="tmhicon">${I.timer}</span><div><b style="font-size:17px">学习计时</b><div class="faint" style="font-size:12px">累计 ${Math.round(tmS().tot / 3600 * 10) / 10} 小时 · 最长连续 ${Math.floor(tmS().best / 60)} 分钟</div></div></div><button class="iconbtn" data-act="close" aria-label="关闭">${I.x}</button></div><div id="tmbody" class="tmbody"></div>`, { cls: "aimod tmmod" });
   tmDraw();
@@ -3027,6 +2811,7 @@ ${hubText(aid, 0)}
 数量：outline ${n > 1 ? "按【第 N 部分】逐部分给出，共 " + n + " 条" : "3–6 条"}；quotes 3–4 条；expr 8–12 条；bg 2–4 条；qs 3 条。`;
 }
 function drawGuide() {
+  if (!$("#hubbody")) return;
   const box = $("#hubbody"), aid = HUB.aid, r = AIC[guideId(aid)], busy = HUB.busy["g" + aid];
   if (busy) { box.innerHTML = `<div class="aiload">${I.spark}<span>正在通读全文，生成摘要、结构、关键表达和讨论问题…</span></div>`; return; }
   if (!r || !r.v) { box.innerHTML = `<div class="hubintro"><div class="hubhero">${I.compass}</div><b>AI 导读</b><p class="muted">读之前先看一遍全文的骨架：一句话主旨、分部分结构、核心论点原句、值得积累的表达、背景知识和讨论问题。</p>${r && r.err ? `<div class="ai muted">${esc(r.err)}</div>` : ""}<button class="btn" data-act="hubguide">${I.spark}生成导读</button></div>` + hubFoot(); return; }
@@ -3082,6 +2867,7 @@ function chatMsgHTML(m, i) {
   return `<div class="cmsg a${m.err ? " err" : ""}" data-i="${i}"><div class="cb">${m.pending && !m.content ? `<span class="typing"><i></i><i></i><i></i></span>` : mdHTML(m.content)}</div>${!m.pending && m.content && !m.err ? `<div class="cact"><button class="linkbtn" data-act="chatcopy" data-i="${i}">${I.copy}复制</button></div>` : ""}</div>`;
 }
 function drawChat() {
+  if (!$("#hubbody")) return;
   const box = $("#hubbody"), rec = hubChat(), aid = HUB.aid, f = HUB.focus ? getS(aid, HUB.focus.s, HUB.focus.m) : null;
   const busy = !!HUB.busy.chat;
   box.innerHTML = `<div class="hubbar"><span class="faint">范围</span>${hubScopeSel(true)}${rec.msgs.length ? `<button class="linkbtn" data-act="chatclear" style="margin-left:auto">清空对话</button>` : ""}</div>
@@ -3119,44 +2905,20 @@ async function chatSend(text, show) {
 /* -- 测验 (AI comprehension quiz) -- */
 const quizHistId = aid => "z_" + aid;
 function drawHubQuiz() {
+  if (!$("#hubbody")) return;
   const box = $("#hubbody"), aid = HUB.aid, hist = (AIC[quizHistId(aid)] || { h: [] }).h, busy = HUB.busy.quiz;
   box.innerHTML = `<div class="hubintro"><div class="hubhero">${I.exam}</div><b>AI 理解测验</b><p class="muted">按你选的范围现出 5 道阅读理解题：主旨、细节、推断、词汇语境义各有覆盖；交卷后每题都有中文解析和原文依据。答对 1 题 +4 XP。</p>
   <div class="hubbar" style="justify-content:center"><span class="faint">范围</span>${hubScopeSel(true)}<div class="seg"><button class="${HUB.qhard ? "" : "on"}" data-act="quizlv" data-k="0">标准</button><button class="${HUB.qhard ? "on" : ""}" data-act="quizlv" data-k="1">挑战</button></div></div>
   ${busy ? `<div class="aiload">${I.spark}<span>正在根据原文出题…</span></div>` : `<button class="btn" data-act="quizgen">${I.spark}出 5 道题</button>`}${HUB.qerr ? `<div class="ai muted">${esc(HUB.qerr)}</div>` : ""}</div>
   ${hist.length ? `<div class="aisec"><h4>测验记录</h4><div class="qhist">${hist.slice(-8).reverse().map(h => `<div><span>${esc(h.sc_name || "")}</span><b class="num">${h.sc}/${h.tot}</b><span class="faint num">${fmtDate(h.at)}</span></div>`).join("")}</div></div>` : ""}` + hubFoot("题目由大模型根据原文生成；解析里给出原文依据，可回到原文核对。");
 }
-async function quizGen() {
-  const aid = HUB.aid, mi = HUB.mi; if (HUB.busy.quiz) return; HUB.busy.quiz = 1; HUB.qerr = ""; drawHubQuiz();
-  const hard = !!HUB.qhard;
-  const p = `你是英语阅读理解命题老师。根据下面的原文出 5 道单项选择题，考查真实理解而不是死记：1 道主旨、2 道细节、1 道推断、1 道词汇或短语的语境义${hard ? "；挑战难度：推断和态度题为主，干扰项要更有迷惑性、需要细读才能排除" : ""}。${profLine()}
-题干和选项用英文；每题 4 个选项，只有一个正确；干扰项要似是而非，但能被原文明确排除。exp 用中文：先说正确答案的依据，再逐个说明错误选项错在哪。ev 给出支撑答案的原文句子（逐字摘录）。
-原文（${hubScopeName(aid, mi)}）：
-<<<
-${hubText(aid, mi)}
->>>
-严格输出 JSON：{"qs":[{"type":"主旨|细节|推断|词汇|态度","q":"题干","o":["选项","选项","选项","选项"],"a":正确选项下标0-3,"exp":"中文解析","ev":"原文依据"}]}`;
-  try {
-    const r = await aiJson(p, { temp: 0.4, maxTokens: 3000, big: true });
-    const qs = arr(r && r.qs).filter(q => q.q && Array.isArray(q.o) && q.o.length >= 3 && q.o.length <= 5 && Number.isInteger(+q.a) && +q.a >= 0 && +q.a < q.o.length).slice(0, 5).map(q => {
-      const ord = shuffle(q.o.map((_, j) => j)); return { type: "mc", q: q.q, sub: (q.type ? "【" + q.type + "】" : ""), o: ord.map(j => String(q.o[j])), a: ord.indexOf(+q.a), exp: (q.exp || "") + (q.ev ? `　原文依据：${q.ev}${inText(hubText(aid, mi), q.ev) ? " ✓" : ""}` : "") };
-    });
-    if (qs.length < 3) throw { code: "parse", message: "题目格式不完整，请再试一次" };
-    delete HUB.busy.quiz;
-    const scName = hubScopeName(aid, mi);
-    runQuiz({ title: "AI 理解测验 · " + scName, qs, onDone: (sc, tot) => {
-      const xp = sc * 4; S.xp += xp; S.stats.aiq = (S.stats.aiq || 0) + 1; save(); checkBadges(); renderChrome();
-      const id = quizHistId(aid), h = AIC[id] || { h: [] }; h.h.push({ mi, sc_name: scName, sc, tot, at: Date.now() }); h.h = h.h.slice(-30); AIC[id] = h; putAI(id);
-      return `AI 测验 +${xp} XP · 关闭后可在 AI 学伴里继续`;
-    } });
-    return;
-  } catch (e) { HUB.qerr = aiErr(e); }
-  delete HUB.busy.quiz; if (HUB.aid === aid && HUB.tab === "quiz") drawHubQuiz();
-}
+
 
 /* -- 复述 / 写作批改 -- */
 const writeId = aid => "r_" + aid;
 const W_TASKS = [["retell", "复述要点", "用 3–6 句英文复述所选范围的主要内容"], ["answer", "回答问题", "用英文回答一个讨论问题"], ["opinion", "表达观点", "你同意演讲者吗？用英文写出理由"]];
 function drawWrite() {
+  if (!$("#hubbody")) return;
   const box = $("#hubbody"), aid = HUB.aid, rec = AIC[writeId(aid)] || { h: [] }, busy = HUB.busy.write;
   const g = (AIC[guideId(aid)] || {}).v, qs = g ? arr(g.qs) : [];
   const t = W_TASKS.find(x => x[0] === HUB.wtask) || W_TASKS[0];
@@ -3311,7 +3073,7 @@ function storyOpen() {
 function coachData() {
   const t = tmS(), days = []; for (let i = 6; i >= 0; i--) { const k = addDays(todayK(), -i); days.push(k.slice(5) + ":" + Math.round((t.day[k] || 0) / 60) + "分"); }
   const vs = Object.values(VOC).filter(v => lx(v.k));
-  const boxes = [0, 0, 0, 0, 0, 0]; vs.forEach(v => boxes[Math.min(5, v.box || 0)]++);
+  const boxes = [0, 0, 0, 0, 0, 0, 0, 0]; vs.forEach(v => boxes[Math.min(7, v.box || 0)]++);
   const hard = vs.filter(v => (v.box || 0) <= 1).sort((a, b) => b.n - a.n).slice(0, 15).map(v => lx(v.k).w + "(点" + v.n + "次,熟练" + (v.box || 0) + ")");
   const quiz = Object.keys(AIC).filter(k => k.startsWith("z_")).flatMap(k => AIC[k].h || []).slice(-10).map(h => h.sc + "/" + h.tot);
   const wr = Object.keys(AIC).filter(k => k.startsWith("r_")).flatMap(k => AIC[k].h || []).slice(-5).map(h => h.res && h.res.score ? `内容${h.res.score.content}/语言${h.res.score.language}/结构${h.res.score.structure}` : "");
@@ -3320,7 +3082,7 @@ function coachData() {
 - 最近 7 天学习时长：${days.join("，")}
 - 计时奖励：连续 15 分钟 ${t.cnt.c || 0} 次，碎片 15 分钟 ${t.cnt.f || 0} 次；最长一次连续 ${Math.floor(t.best / 60)} 分钟
 - 已完成：精读 ${jingDone().length} 篇，短篇 ${shortDone().length} 篇；本周精读进度 ${S.cur.art && AMAP[S.cur.art] ? Math.round(progOf(S.cur.art) * 100) + "%" : "无"}
-- 生词本：共 ${vs.length} 个，今天待复习 ${dueCards().length} 个；熟练度分布（0→5）：${boxes.join("/")}
+- 生词本：共 ${vs.length} 个，今天待复习 ${dueCards().length} 个；熟练度分布（0→7）：${boxes.join("/")}
 - 反复点查但还不熟的词：${hard.join("，") || "无"}
 - 收藏句子：${Object.keys(SEN).length} 句；跟读 ${S.stats.speak || 0} 次，听完全文 ${S.stats.listen || 0} 次
 - 周考记录（最近）：${S.exams.slice(-5).map(e => e.sc + "/" + e.tot).join("，") || "无"}
@@ -3427,8 +3189,9 @@ document.addEventListener("input", e => {
   else if (id === "btta") BT.text = e.target.value;
 });
 document.addEventListener("keydown", e => {
+  if (e.isComposing || e.keyCode === 229) return;
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { if (e.target.id === "chatta") { e.preventDefault(); chatSend(e.target.value); } else if (e.target.id === "wta") { e.preventDefault(); writeSubmit(); } else if (e.target.id === "btta") { e.preventDefault(); btSubmit(); } }
-  else if (e.key === "Enter" && !e.shiftKey && e.target.id === "chatta" && document.documentElement.dataset.mode === "L" && !e.isComposing) { e.preventDefault(); chatSend(e.target.value); }
+  else if (e.key === "Enter" && !e.shiftKey && e.target.id === "chatta" && document.documentElement.dataset.mode === "L" && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); chatSend(e.target.value); }
 });
 
 /* ---------- v1.8.1: robust LLM calls (DeepSeek thinking mode, JSON mode, repair, retry) ---------- */
@@ -3621,6 +3384,563 @@ async function aiTest() {
   }
 }
 
+/* ======================================================================
+   v1.9 — stability fixes (first-visit reload, multi-window sync, storage
+   quota, orphan words, Android back), timer rules, SRS upgrade,
+   dictation, on-device recognition of read-aloud recordings.
+   ====================================================================== */
+
+/* ---------- storage: quota handling ---------- */
+const LS_EV = { warned: 0, freed: 0 };
+function lsFree(need) {
+  const ev = Object.keys(AIC).filter(x => /^(w_|s_|d_|bz_|g_|st_last$|coach$)/.test(x));
+  if (!ev.length) return false;
+  let freed = 0; const goal = need + 300000;
+  for (const x of ev) { try { freed += JSON.stringify(AIC[x]).length; } catch (e) {} delete AIC[x]; if (freed >= goal) break; }
+  try { localStorage.setItem("tedjd:ai", JSON.stringify(AIC)); } catch (e) { return false; }
+  LS_EV.freed += freed; return true;
+}
+function lsFull() {
+  if (LS_EV.warned) return; LS_EV.warned = 1; setTimeout(() => { LS_EV.warned = 0; }, 60000);
+  if ($(".lsbar")) return;
+  const b = document.createElement("div"); b.className = "updbar lsbar";
+  b.innerHTML = `<span>设备存储已满，最新的学习记录没能保存。请导出备份，再删除不再学的精读腾出空间。</span><button class="btn sm" data-act="go" data-v="prefs" data-a="s-backup">去处理</button><button class="iconbtn" data-act="lsbarx" aria-label="关闭">${I.x}</button>`;
+  document.body.appendChild(b);
+}
+function lsUsage() { let n = 0; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith("tedjd:")) n += (localStorage.getItem(k) || "").length + k.length; } } catch (e) {} return n; }
+
+/* ---------- platform ---------- */
+function initPWA() {
+  document.documentElement.classList.toggle("standalone", isStandalone());
+  Cloud.sample = makeAI();
+  setTimeout(() => { ensureDict().then(() => { if (VIEW === "review" && REVIEW_TAB === "mem" && !FL) render(); else renderChrome(); }).catch(() => {}); }, VIEW === "review" ? 0 : 1200);
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+  if ("serviceWorker" in navigator && location.protocol !== "file:") {
+    const hadCtrl = !!navigator.serviceWorker.controller;   // first install: no reload when the worker takes over
+    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(reg => {
+      INSTALL.reg = reg;
+      if (reg.waiting && navigator.serviceWorker.controller) showUpdate();
+      reg.addEventListener("updatefound", () => { const w = reg.installing; if (w) w.addEventListener("statechange", () => { if (w.state === "installed" && navigator.serviceWorker.controller) showUpdate(); }); });
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) reg.update().catch(() => {}); });
+    }).catch(() => {});
+    let reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => { if (reloading || !hadCtrl) return; reloading = true; location.reload(); });
+  }
+  window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); INSTALL.evt = e; if (VIEW === "home" || VIEW === "prefs") render(); });
+  window.addEventListener("appinstalled", () => { INSTALL.evt = null; toast("已安装，可以从桌面图标打开了"); render(); });
+  renderChrome();
+}
+function loadLocal() {
+  const s = LS.get("state"); if (s && s.v === 1) S = Object.assign(freshState(), s, { set: Object.assign(freshState().set, s.set || {}) });
+  VOC = LS.get("voc") || {}; SEN = LS.get("sen") || {}; AIC = LS.get("ai") || {};
+  if (!LS.get("first")) LS.set("first", Date.now());
+  if (FULL) {
+    TR = LS.get("tr") || {}; ITEMS = LS.get("items") || {}; migrateV13();
+    let ch = false; Object.values(VOC).forEach(v => { if (v && v.a && !AMAP[v.a]) { v.a = null; v.s = 0; delete v.m; ch = true; } }); if (ch) LS.set("voc", VOC);
+  } else if (S.cur.art && !isUser(S.cur.art)) S.cur.art = null;
+}
+function installCard() {
+  if (!PWA) {
+    if (!PWA_URL) return "";
+    return `<div class="banner install" style="margin-bottom:12px"><div class="row" style="gap:12px;flex-wrap:nowrap"><img src="${PWA_URL}icons/icon-192.png" alt="" class="appico"><div><b>TED 精读已有 App 版</b><div class="muted" style="font-size:12.5px">可装到手机主屏幕和电脑桌面，离线可用。先在「设置」导出备份，再在 App 里导入，进度就能带过去。</div></div></div><a class="btn" href="${PWA_URL}" target="_blank" rel="noopener">打开 App 版</a></div>`;
+  }
+  let h = ""; const now = Date.now();
+  if (isIOS() && !isStandalone()) {
+    if (now - (LS.get("iosWarn") || 0) > 3 * DAY) h += `<div class="banner install warnb" style="margin-bottom:12px"><div class="row" style="gap:12px;flex-wrap:nowrap"><img src="icons/icon-192.png" alt="" class="appico"><div><b>请添加到主屏幕再用</b><div class="muted" style="font-size:12.5px">在 Safari 标签页里使用时，只要连续 7 天没打开这个网页，iOS 会自动清空它的全部数据（进度、导入的讲稿和音频）。从主屏幕图标打开不受这个限制。</div></div></div><div class="row"><button class="btn ghost sm" data-act="ioswarnok">知道了</button><button class="btn" data-act="install">怎么添加</button></div></div>`;
+  } else if (!isStandalone() && !LS.get("instDismiss")) {
+    h += `<div class="banner install" style="margin-bottom:12px"><div class="row" style="gap:12px;flex-wrap:nowrap"><img src="icons/icon-192.png" alt="" class="appico"><div><b>把 TED 精读装到${isMobile() ? "手机主屏幕" : "电脑桌面"}</b><div class="muted" style="font-size:12.5px">像 App 一样全屏打开、离线可用，学习记录保存在本机。</div></div></div><div class="row"><button class="btn ghost sm" data-act="instno">不再提示</button><button class="btn" data-act="install">安装</button></div></div>`;
+  }
+  const amount = Object.keys(VOC).length + Object.keys(ITEMS).length * 10, last = LS.get("lastBak") || LS.get("first") || now;
+  if (amount >= 30 && now - last > 14 * DAY && now - (LS.get("bakSnooze") || 0) > 3 * DAY) h += `<div class="banner" style="margin-bottom:12px"><span>已经 ${Math.floor((now - last) / DAY)} 天没有备份了。学习记录只存在这台设备上，换机或清理浏览器数据就会丢失。</span><div class="row"><button class="btn ghost sm" data-act="baksnooze">稍后</button><button class="btn sm" data-act="bkout">导出备份</button></div></div>`;
+  return h;
+}
+async function exportBackup() { await saveFile("TED精读_备份_" + todayK() + ".json", new Blob([JSON.stringify(backupObj())], { type: "application/json" })); LS.set("lastBak", Date.now()); }
+
+/* ---------- multi-window: follow writes made in another window ---------- */
+const TAB_ID = Math.random().toString(36).slice(2);
+let syncT = null;
+window.addEventListener("storage", e => {
+  if (!e.key || !e.key.startsWith("tedjd:")) return;
+  const k = e.key.slice(6);
+  if (k === "state") { const s = LS.get("state"); if (!(s && s.v === 1 && (s.ts || 0) > (S.ts || 0))) return; S = Object.assign(freshState(), s, { set: Object.assign(freshState().set, s.set || {}) }); }
+  else if (k === "voc") VOC = LS.get("voc") || {};
+  else if (k === "sen") SEN = LS.get("sen") || {};
+  else if (k === "ai") AIC = LS.get("ai") || {};
+  else if (k === "tr" && FULL) { TR = LS.get("tr") || {}; Object.keys(TXC).forEach(x => delete TXC[x]); Object.keys(SCACHE).forEach(x => delete SCACHE[x]); }
+  else if (k === "items" && FULL) { ITEMS = LS.get("items") || {}; Object.keys(AMAP).forEach(id => { if (isUser(id) && !ITEMS[id]) delete AMAP[id]; }); Object.values(ITEMS).forEach(regItem); }
+  else return;
+  clearTimeout(syncT);
+  syncT = setTimeout(() => {
+    const busy = $(".modal") || $(".sheet") || (document.activeElement && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) || FL || QZ && !QZ.sub && $(".modal");
+    if (busy) { renderChrome(); return; }
+    const y = window.scrollY; render(); window.scrollTo(0, y);
+  }, 300);
+});
+
+/* ---------- navigation: real history entries so Android/browser back stays in the app ---------- */
+function go(v, anchor) {
+  if (ALIAS[v]) { anchor = anchor || ALIAS[v][1]; v = ALIAS[v][0]; }
+  if (!VIEWNAMES.has(v)) v = "home";
+  if (v === "read" && (!READ_ID || !AMAP[READ_ID])) READ_ID = S.cur.art || ARTS[0].id;
+  if (v === "review" && anchor) REVIEW_TAB = EXAM_ANCH.has(anchor) ? "exam" : "mem";
+  if (tabOf(v) && !isSubView(v)) LAST_TAB = v;
+  clearTimeout(clickT); clickT = null; clearTimeout(lpT);
+  const prev = Object.assign({}, NAV_CUR || { v: VIEW, r: VIEW === "read" ? READ_ID : null, rt: REVIEW_TAB }, { y: window.scrollY });
+  VIEW = v; closeMenus(); closeSheet(); if (!modalLock) closeModal(true);
+  NAV_CUR = { v, r: v === "read" ? READ_ID : null, rt: REVIEW_TAB };
+  const moved = prev && (prev.v !== NAV_CUR.v || prev.r !== NAV_CUR.r);
+  if (!NAV_BACKING && moved) { NAV_STACK.push(prev); if (NAV_STACK.length > 40) NAV_STACK.shift(); }
+  try { if (!NAV_BACKING && moved) history.pushState({ t: ++HIDX }, "", "#" + v); else history.replaceState({ t: HIDX }, "", "#" + v); } catch (e) {}
+  render(); window.scrollTo(0, 0);
+  if (anchor) setTimeout(() => doSub(v, anchor), 30);
+}
+let HIDX = 0; try { history.replaceState({ t: 0 }, "", location.href); } catch (e) {}
+function histKeep() { try { history.pushState({ t: ++HIDX }, "", "#" + VIEW); } catch (e) {} }
+/* only entries we created carry {t}; a plain hash change (typed URL, link) has no state and is left to the hashchange handler */
+window.addEventListener("popstate", e => {
+  const st = e.state; if (!st || st.t == null) return;
+  const fwd = st.t > HIDX; HIDX = st.t;
+  if (fwd) { const h = location.hash.slice(1); if ((VIEWNAMES.has(h) || ALIAS[h]) && h !== VIEW) { NAV_BACKING = true; try { go(h); } finally { NAV_BACKING = false; } } return; }
+  if ($(".menu")) { closeMenus(); histKeep(); return; }
+  if ($(".modal")) { if (!modalLock) closeModal(); histKeep(); return; }
+  if ($(".sheet")) { closeSheet(); histKeep(); return; }
+  if (NAV_STACK.length) { navBack(); return; }
+  const h = location.hash.slice(1);
+  if ((VIEWNAMES.has(h) || ALIAS[h]) && h !== VIEW) { NAV_BACKING = true; try { go(h); } finally { NAV_BACKING = false; } }
+});
+
+/* ---------- words ---------- */
+function openWord(aid, si, ti, el, m) {
+  if (aid !== READ_ID && VIEW === "read") return;
+  const s = getS(aid, si, m); if (!s || !s.toks || !s.toks[ti]) return;
+  const tok = s.toks[ti], key = tok[1]; if (!key) return;
+  $$(".w.act").forEach(x => x.classList.remove("act")); if (el) el.classList.add("act");
+  if (!key.startsWith("~")) recordWord(key, aid, si, m);
+  sheet(`<div class="t"><b>单词详解</b></div>`, wordInfoHTML(key, aid, si, ti, m), { kind: "float", anchor: el });
+  say(lx(key) ? lx(key).w : tok[0], S.set.voice, true);
+}
+/* looking a word up again on a later day means it has slipped: drop one level and review it today */
+function recordWord(key, aid, si, m) {
+  const now = Date.now(), k = todayK(); const v = VOC[key];
+  if (v) { v.n++; v.l = now; if (!v.a || !AMAP[v.a]) { v.a = aid; v.s = si; if (m === "t") v.m = "t"; else delete v.m; } if ((v.box || 0) > 0 && v.dm !== k && v.rv !== k) { v.box = v.box - 1; v.due = k; v.dm = k; } }
+  else { VOC[key] = { k: key, a: aid, s: si, n: 1, t: now, l: now, box: 0, due: k }; if (m === "t") VOC[key].m = "t"; }
+  putVoc(key); markStudy(); checkBadges();
+  $$(".w").forEach(el => { const sEl = el.closest(".sent"); if (!sEl || !READ_ID) return; const ss = getS(READ_ID, +sEl.dataset.s, sEl.dataset.m); const t = ss && ss.toks[+el.dataset.t]; if (t && t[1] === key) el.classList.add("seen"); });
+  renderChrome();
+}
+function srsMiss(k) {
+  const t = todayK(), v = VOC[k];
+  if (v) { v.box = 0; v.due = t; v.dm = t; }
+  else VOC[k] = { k, a: null, s: 0, n: 0, t: Date.now(), l: Date.now(), box: 0, due: t, src: "exam" };
+  putVoc(k);
+}
+async function aiWord(key, aid, si, m) {
+  const box = $("#aiw"); const btn = $("[data-act=aiword]"); if (btn) btn.disabled = true; if (box) box.innerHTML = '<div class="ai muted">正在生成例句…</div>';
+  const s = aid && AMAP[aid] ? getS(aid, si, m) : null; const L = lx(key) || { w: key };
+  try {
+    const r = await aiJson(s ? `你是资深英语老师。学习者在下面这句英文中点击了单词 "${L.w}"。请为这个词造 1 个全新的、自然地道、长度适中的英文例句（不要照抄原句，用法与原句语境中的含义一致），并给出准确的整句中文翻译。严格输出 JSON：{"one":{"en":"英文例句","zh":"整句中文翻译"}}\n原句：${s.en}`
+      : `你是资深英语老师。请为英文单词 "${L.w}"（${(L.tr && L.tr[0] || "").slice(0, 40)}）按最常用的含义造 1 个自然地道、长度适中的英文例句，并给出准确的整句中文翻译。严格输出 JSON：{"one":{"en":"英文例句","zh":"整句中文翻译"}}`, { temp: 0.7, maxTokens: 400 });
+    if (!r || !r.one || !r.one.en) throw { code: "parse", message: "返回内容缺少例句" };
+    const id = "w_" + safeId(key) + "_" + (aid || "").slice(0, 6) + (m === "t" ? "t" : "") + si; r.key = key; r.aid = aid || ""; r.si = si; r.m = m || ""; AIC[id] = r; putAI(id);
+    if (box) box.innerHTML = aiOneHTML(r, key, aid || "", si, m); if (btn) btn.remove();
+  } catch (e) { if (box) box.innerHTML = `<div class="ai muted">${esc(aiErr(e))}</div>`; if (btn) btn.disabled = false; }
+}
+function itemDelete(id) {
+  delete ITEMS[id]; delete TR[id]; delete TXC[id]; delete AMAP[id];
+  ["tprog", "mdone", "rmod"].forEach(f => { if (S[f]) delete S[f][id]; });
+  if (S.cur.art === id) S.cur.art = null; if (S.nextPick === id) S.nextPick = null;
+  S.abandoned = S.abandoned.filter(x => x !== id); S.done = S.done.filter(x => x.a !== id);
+  Object.keys(SEN).forEach(k => { if (SEN[k].a === id) delete SEN[k]; });
+  Object.values(VOC).forEach(v => { if (v.a === id) { v.a = null; v.s = 0; delete v.m; } });   // keep the words, drop the dead link
+  Object.keys(AIC).forEach(k => { if (k === "g_" + id || k === "q_" + id || k === "z_" + id || k === "r_" + id || k.startsWith("s_" + id + "_") || k.startsWith("bz_" + id + "_")) delete AIC[k]; });
+  idbDel(id).catch(() => {}); idbDel(id + "#asr").catch(() => {}); ALN.q = ALN.q.filter(x => x !== id); if (ALN.job && ALN.job.aid === id) ALN.job.cancel = true; if (AUD.aid === id) audioUnload();
+  saveTR(); saveItems(); LS.set("sen", SEN); LS.set("voc", VOC); LS.set("ai", AIC); save();
+}
+
+/* ---------- SRS: wider intervals, card types by level, misses flow back ---------- */
+const SRS_IV = [0, 1, 3, 7, 14, 30, 60, 120], SRS_MAX = 7;
+function cardType(v) {
+  const L = lx(v.k), b = v.box || 0;
+  if (b >= 4 && /^[a-z][a-z'-]{2,}$/i.test(L.w)) return "spell";
+  if (b >= 2) { const s = v.a && AMAP[v.a] ? vSent(v) : null; if (s && s.toks && s.toks.some(t => t[1] === v.k)) return "cloze"; }
+  return "rec";
+}
+function vMem() {
+  const all = Object.values(VOC), vs = all.filter(v => lx(v.k));
+  if (FULL && !DICT && all.length > vs.length) { ensureDict().then(() => { if (VIEW === "review" && REVIEW_TAB === "mem" && !FL) render(); }).catch(() => {}); return `<div class="sechead"><h2>记忆库</h2></div><div class="empty">正在载入词典…</div>`; }
+  vs.sort(MEMSORT === "az" ? (a, b) => a.k.localeCompare(b.k) : MEMSORT === "freq" ? (a, b) => b.n - a.n : (a, b) => b.l - a.l);
+  const ss = Object.entries(SEN).filter(([, v]) => AMAP[v.a] && (v.m !== "t" || hasTR(v.a))).sort((a, b) => b[1].l - a[1].l);
+  const due = dueCards().length;
+  return `<div class="sechead"><h2>记忆库</h2><span class="muted">单词 ${vs.length} · 句子 ${ss.length}</span></div>
+  <div class="panel row" style="justify-content:space-between" id="s-flash"><div><b>今日待复习 ${due} 个</b><div class="muted" style="font-size:12.5px">认识的词按 1、3、7、14、30、60、120 天的间隔再出现；越熟练卡片越难：认词 → 原句填空 → 拼写。阅读时再次查到、考试答错的词会自动回到今天的复习。</div></div><button class="btn" data-act="flash" ${due ? "" : "disabled"}>开始强化复习</button></div>
+  <div id="flashbox"></div>
+  <div class="sec" id="s-words"><div class="sechead"><h2>单词</h2><div class="seg"><button class="${MEMSORT === "recent" ? "on" : ""}" data-act="msort" data-m="recent">最近</button><button class="${MEMSORT === "freq" ? "on" : ""}" data-act="msort" data-m="freq">次数</button><button class="${MEMSORT === "az" ? "on" : ""}" data-act="msort" data-m="az">A–Z</button></div></div>
+  ${vs.length ? `<div class="wlist">${vs.map(v => { const L = lx(v.k); return `<button class="witem" data-act="memword" data-k="${esc(v.k)}"><span class="top"><b>${esc(L.w)}</b><span class="faint" style="font-size:12px">/${esc(L.ph)}/</span></span><span class="m">${esc((L.tr[0] || "").slice(0, 34))}</span><span class="f">${esc(AMAP[v.a] ? AMAP[v.a].titleZh : v.src === "exam" ? "考试错题" : "")} · 点击 ${v.n} 次 · 熟练度 ${v.box || 0}/${SRS_MAX}</span></button>`; }).join("")}</div>` : '<div class="empty">阅读时点击不认识的单词，它们会自动收进这里。</div>'}</div>
+  <div class="sec" id="s-sents"><div class="sechead"><h2>句子</h2></div>
+  ${ss.length ? `<div class="slist">${ss.map(([id, v]) => { const s = getS(v.a, v.s, v.m); if (!s) return ""; return `<button class="sitem" data-act="memsent" data-a="${v.a}" data-s="${v.s}" data-m="${v.m || ""}">${esc(s.en)}${s.zh && !s.zhPara ? `<div class="zh">${esc(s.zh)}</div>` : `<div class="zh">${esc(AMAP[v.a].titleZh)} · 精读全文</div>`}</button>`; }).join("")}</div>` : '<div class="empty">双击或长按句子中的单词，句子解析会保存在这里。</div>'}</div>`;
+}
+function startFlash() {
+  if (FULL && !DICT) { ensureDict().then(startFlash).catch(() => toast("词典加载失败")); return; }
+  const d = shuffle(dueCards()); if (!d.length) { toast("今天没有待复习的单词"); return; }
+  FL = { list: d, i: 0, flip: false, ty: null, again: new Set(), n: [0, 0, 0] }; drawFlash();
+}
+function drawFlash() {
+  const box = $("#flashbox"); if (!box || !FL) return;
+  if (FL.i >= FL.list.length) { box.innerHTML = `<div class="panel" style="margin-top:12px;text-align:center"><b>本轮复习完成</b><p class="muted">认识 ${FL.n[2]} · 模糊 ${FL.n[1]} · 不认识 ${FL.n[0]}${FL.again.size ? "（不认识的词已在本轮末尾重复出现）" : ""}</p></div>`; FL = null; renderChrome(); return; }
+  const v = FL.list[FL.i], L = lx(v.k), a = v.a ? AMAP[v.a] : null, s = a ? vSent(v) : null;
+  const ty = FL.ty || (FL.ty = cardType(v));
+  const sayB = `<button class="say" data-act="say" data-text="${esc(L.w)}">${I.vol}发音</button>`;
+  const tag = { rec: "认词", cloze: "原句填空", spell: "拼写" }[ty];
+  let inner;
+  if (FL.flip) {
+    inner = `<span class="ftype">${tag}</span>${ty === "spell" && FL.typed != null ? `<div class="fres ${FL.right ? "ok" : "no"}">${FL.right ? "拼写正确" : "你写的：" + esc(FL.typed || "（空）")}</div>` : ""}<div class="wd">${esc(L.w)}</div><div class="ph">/${esc(L.ph)}/ ${sayB}</div><div>${L.tr.slice(0, 3).map(esc).join("<br>")}</div>${s ? `<div class="ex" style="text-align:left;margin-top:6px"><div class="en">${esc(s.en)}</div>${s.zh && !s.zhPara ? `<div class="zh">${esc(s.zh)}</div>` : ""}</div>` : ""}`;
+  } else if (ty === "cloze") {
+    const ti = s.toks.findIndex(t => t[1] === v.k), w0 = s.toks[ti][0];
+    inner = `<span class="ftype">${tag}</span><div class="en fcl">${s.toks.map((t, i) => (i === ti ? `<b class="blank">${"_".repeat(Math.max(4, Math.min(10, w0.length)))}</b>` : esc(t[0])) + t[2]).join("")}</div><div class="muted">${esc(firstTr(v.k) || "")} · 首字母 ${esc(w0[0])}</div><div class="faint">想出空格里的词（注意词形），再点卡片</div>`;
+  } else if (ty === "spell") {
+    inner = `<span class="ftype">${tag}</span><div style="font-size:17px">${esc(firstTr(v.k) || "")}</div><div class="faint">/${esc(L.ph)}/ ${sayB}</div><div class="row fsprow"><input id="fsp" class="txt" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="拼出这个单词"><button class="btn sm" data-act="flcheck">确认</button></div><button class="linkbtn" data-act="flip">不会，直接看答案</button>`;
+  } else inner = `<span class="ftype">${tag}</span><div class="wd">${esc(L.w)}</div>${sayB}<div class="faint">想一想意思，再点卡片</div>`;
+  box.innerHTML = `<div class="flash" style="margin-top:12px"><div class="faint num" style="text-align:center;font-size:12px;margin-bottom:6px">${FL.i + 1} / ${FL.list.length}</div>
+  <div class="fcard"${ty === "spell" && !FL.flip ? "" : ' data-act="flip"'}>${inner}</div>
+  ${FL.flip && aiOK() ? `<div id="flex"></div><div class="flexrow"><button class="btn sm ghost" data-act="flex">${I.spark}AI 新例句</button></div>` : ""}
+  ${FL.flip ? `<div class="fbtns"><button class="btn warn" data-act="fl" data-r="0">不认识</button><button class="btn ghost" data-act="fl" data-r="1">模糊</button><button class="btn ${ty === "spell" && FL.typed != null && !FL.right ? "ghost" : ""}" data-act="fl" data-r="2">认识</button></div>` : ""}</div>`;
+  if (ty === "spell" && !FL.flip) setTimeout(() => { const i = $("#fsp"); if (i && !isMobile()) i.focus(); }, 30);
+}
+function flCheck() {
+  if (!FL) return; const i = $("#fsp"), v = FL.list[FL.i], L = lx(v.k);
+  FL.typed = (i ? i.value : "").trim(); FL.right = FL.typed.toLowerCase() === L.w.toLowerCase(); FL.flip = true; drawFlash();
+  if (FL.right) say(L.w, S.set.voice, true);
+}
+function rateFlash(r) {
+  const v = FL.list[FL.i], b = v.box || 0, k = todayK();
+  if (r === 0) { v.box = b >= 3 ? 1 : 0; v.due = k; if (!FL.again.has(v.k)) { FL.again.add(v.k); FL.list.push(v); } }
+  else if (r === 1) { v.box = b; v.due = addDays(k, Math.max(1, Math.round(SRS_IV[Math.max(1, b)] / 2))); }
+  else { v.box = Math.min(SRS_MAX, b + 1); v.due = addDays(k, SRS_IV[v.box]); }
+  v.rv = k; VOC[v.k] = v; putVoc(v.k); markStudy(); FL.n[r]++; FL.i++; FL.flip = false; FL.ty = null; FL.typed = null; drawFlash();
+}
+function submitQuiz() {
+  const q = QZ; $$("input[data-qi]").forEach(i => q.ans[+i.dataset.qi] = i.value);
+  let sc = 0, back = 0;
+  q.qs.forEach((x, i) => {
+    const ok = x.type === "spell" ? (q.ans[i] || "").trim().toLowerCase() === x.ans : q.ans[i] === x.a; if (ok) sc++;
+    else if (x.k && !String(x.k).startsWith("~") && lx(x.k)) { srsMiss(x.k); back++; }
+  });
+  q.sub = true; q.score = sc; markStudy();
+  let redraw = true;
+  if (q.onDone) { const r = q.onDone(sc, q.qs.length); if (r === false) redraw = false; else if (r) q.resultText = r; }
+  if (back) { q.resultText = (q.resultText ? q.resultText + " · " : "") + `答错的 ${back} 个词已加入今天的复习`; renderChrome(); }
+  if (redraw) drawQuiz();
+}
+
+/* ---------- AI quiz: per-option reasons that survive the shuffle ---------- */
+async function quizGen() {
+  const aid = HUB.aid, mi = HUB.mi; if (HUB.busy.quiz) return; HUB.busy.quiz = 1; HUB.qerr = ""; drawHubQuiz();
+  const hard = !!HUB.qhard;
+  const p = `你是英语阅读理解命题老师。根据下面的原文出 5 道单项选择题，考查真实理解而不是死记：1 道主旨、2 道细节、1 道推断、1 道词汇或短语的语境义${hard ? "；挑战难度：推断和态度题为主，干扰项要更有迷惑性、需要细读才能排除" : ""}。${profLine()}
+题干和选项用英文；每题 4 个选项，只有一个正确；干扰项要似是而非，但能被原文明确排除。exp 用中文说明正确答案的依据；why 按选项顺序逐个用中文说明每个选项对或错的原因。选项顺序会被打乱，所以 exp 和 why 里绝对不要用 A/B/C/D 或“第几个选项”来指代选项，需要时直接引用选项内容。ev 给出支撑答案的原文句子（逐字摘录）。
+原文（${hubScopeName(aid, mi)}）：
+<<<
+${hubText(aid, mi)}
+>>>
+严格输出 JSON：{"qs":[{"type":"主旨|细节|推断|词汇|态度","q":"题干","o":["选项","选项","选项","选项"],"a":正确选项下标0-3,"exp":"中文解析","why":["对选项1的说明","对选项2的说明","对选项3的说明","对选项4的说明"],"ev":"原文依据"}]}`;
+  try {
+    const r = await aiJson(p, { temp: 0.4, maxTokens: 3500, big: true });
+    const src = hubText(aid, mi);
+    const qs = arr(r && r.qs).filter(q => q.q && Array.isArray(q.o) && q.o.length >= 3 && q.o.length <= 5 && Number.isInteger(+q.a) && +q.a >= 0 && +q.a < q.o.length).slice(0, 5).map(q => {
+      const ord = shuffle(q.o.map((_, j) => j)), why = Array.isArray(q.why) && q.why.length === q.o.length ? q.why : null;
+      const lines = why ? "　" + ord.map((j, n) => `${String.fromCharCode(65 + n)}${j === +q.a ? "（正确）" : ""}：${why[j]}`).join("　") : "";
+      return { type: "mc", q: q.q, sub: (q.type ? "【" + q.type + "】" : ""), o: ord.map(j => String(q.o[j])), a: ord.indexOf(+q.a), exp: (q.exp || "") + lines + (q.ev ? `　原文依据：${q.ev}${inText(src, q.ev) ? " ✓" : ""}` : "") };
+    });
+    if (qs.length < 3) throw { code: "parse", message: "题目格式不完整，请再试一次" };
+    delete HUB.busy.quiz;
+    const scName = hubScopeName(aid, mi);
+    runQuiz({ title: "AI 理解测验 · " + scName, qs, onDone: (sc, tot) => {
+      const xp = sc * 4; S.xp += xp; S.stats.aiq = (S.stats.aiq || 0) + 1; save(); checkBadges(); renderChrome();
+      const id = quizHistId(aid), h = AIC[id] || { h: [] }; h.h.push({ mi, sc_name: scName, sc, tot, at: Date.now() }); h.h = h.h.slice(-30); AIC[id] = h; putAI(id);
+      return `AI 测验 +${xp} XP · 关闭后可在 AI 学伴里继续`;
+    } });
+    return;
+  } catch (e) { HUB.qerr = aiErr(e); }
+  delete HUB.busy.quiz; if (HUB.aid === aid && HUB.tab === "quiz") drawHubQuiz();
+}
+
+/* ---------- export: lighter image PDF + a text PDF through the system print dialog ---------- */
+function notesItems() {
+  const items = [];
+  const vs = Object.values(VOC).filter(v => lx(v.k)).sort((a, b) => a.t - b.t);
+  const ss = Object.values(SEN).filter(v => AMAP[v.a] && (v.m !== "t" || hasTR(v.a))).sort((a, b) => a.t - b.t);
+  items.push(`<h1>TED 精读学习笔记</h1><div style="color:#5A6B62;margin:4px 0 14px">导出日期 ${todayK()} · 已完成 ${S.done.length} 篇 · 点学单词 ${vs.length} 个 · 分析句子 ${ss.length} 句 · 连续学习 ${streak()} 天 · Lv.${levelOf(S.xp).i}</div>`);
+  if (S.done.length) items.push(`<h2>已完成文章</h2>` + S.done.filter(d => AMAP[d.a]).map(d => `<div>· ${esc(AMAP[d.a].title)}（${esc(AMAP[d.a].titleZh)}）— ${d.d}</div>`).join(""));
+  if (vs.length) { items.push("<h2>一、单词详注</h2>"); vs.forEach((v, i) => { const L = lx(v.k), a = v.a ? AMAP[v.a] : null, s = a ? vSent(v) : null, K = a && a.keys[v.k];
+    items.push(`<div class="pw"><b>${i + 1}. ${esc(L.w)}</b> <span style="color:#5A6B62">/${esc(L.ph)}/</span> ${(L.tags || []).slice(0, 4).map(t => `<span style="font-size:10px;color:#B3801F">${t}</span>`).join(" ")}<div>${L.tr.map(esc).join("；")}</div>${Object.keys(L.ex || {}).length ? `<div style="color:#5A6B62;font-size:11px">${Object.entries(L.ex).map(([k, x]) => k + " " + esc(x)).join(" · ")}</div>` : ""}${K ? `<div><b>用法</b>：${esc(K.use)}<br><i>${esc(K.ex)}</i> ${esc(K.exZh)}</div>` : ""}${s ? `<div style="margin-top:3px"><b>原文</b>：${esc(s.en)}<br><span style="color:#5A6B62">${s.zhPara ? (s.zh ? "【本段译文】" + esc(s.zh) : "") : esc(s.zh)}</span></div>` : ""}<div style="color:#8A9A91;font-size:10.5px">出处：${esc(a ? a.titleZh : "")} · 点击 ${v.n} 次 · ${fmtDate(v.t)}</div></div>`); }); }
+  if (ss.length) { items.push("<h2>二、句子解析</h2>"); ss.forEach((v, i) => { const a = AMAP[v.a], s = vSent(v), an = s && s.an; if (!an) return;
+    items.push(`<div class="pw"><b>${i + 1}.</b> ${esc(s.en)}<div style="color:#5A6B62">${s.zhPara ? (s.zh ? "【本段译文】" + esc(s.zh) : "") : esc(s.zh)}</div><div class="an">句型：${esc(an.kind)}${an.passive ? " · 含被动" : ""}${an.inv ? " · 倒装" : ""}　主干：<span style="color:#2B5FA0">${esc(an.skel.S)}</span> | <span style="color:#B4433A">${esc(an.skel.V)}</span>${an.skel.O ? " | <span style='color:#2F7D47'>" + esc(an.skel.O) + "</span>" : ""}</div>${an.clauses.map(c => `<div class="an">· ${esc(c.type)}：${esc(c.text)}${c.detail ? "（" + esc(c.detail) + "）" : ""}</div>`).join("")}<div class="an">谓语：${an.verbs.map(x => esc(x.form) + "（" + esc(x.tense) + "，" + esc(x.voice) + "）").join("；")}</div>${an.nf.length ? `<div class="an">非谓语：${an.nf.map(x => esc(x.word) + "（" + esc(x.type) + "作" + esc(x.fn) + "）").join("；")}</div>` : ""}${an.notes.map(n => `<div class="an" style="color:#8A6413">★ ${esc(n)}</div>`).join("")}${AIC["s_" + v.a + "_" + (v.m === "t" ? "t" : "") + v.s] && AIC["s_" + v.a + "_" + (v.m === "t" ? "t" : "") + v.s].structure ? `<div class="an">AI：${esc(AIC["s_" + v.a + "_" + (v.m === "t" ? "t" : "") + v.s].structure)}</div>` : ""}<div style="color:#8A9A91;font-size:10.5px">出处：${esc(a.titleZh)}${v.m === "t" ? " · 精读全文" : ""}</div></div>`); }); }
+  return items;
+}
+async function exportPdf() {
+  const msg = $("#expmsg"); msg.textContent = "正在排版 PDF…";
+  if (FULL) { try { await ensureFull(); } catch (e) {} }
+  const root = $("#pdfroot"); root.innerHTML = "";
+  const items = notesItems();
+  const pages = []; let page = null, used = 0; const LIM = 1123 - 56 - 80;
+  const newPage = () => { page = document.createElement("div"); page.className = "pp"; root.appendChild(page); pages.push(page); used = 0; };
+  newPage();
+  for (const h of items) { const d = document.createElement("div"); d.innerHTML = h; page.appendChild(d); const hgt = d.offsetHeight + 4; if (used + hgt > LIM && used > 0) { page.removeChild(d); newPage(); page.appendChild(d); used = d.offsetHeight + 4; } else used += hgt; }
+  pages.forEach((p, i) => { const f = document.createElement("div"); f.className = "ft"; f.innerHTML = `<span>TED 精读计划 · 学习笔记</span><span>${i + 1} / ${pages.length}</span>`; p.appendChild(f); });
+  try { msg.textContent = `正在渲染 ${pages.length} 页…`; await renderPagesToPdf(pages, "TED精读_学习笔记_" + todayK() + ".pdf"); msg.textContent = ""; }
+  catch (e) { msg.textContent = PWA ? "PDF 组件加载失败，请刷新应用后重试。" : "PDF 组件加载失败，请检查网络后重试。"; }
+  root.innerHTML = "";
+}
+async function printNotes() {
+  if (FULL) { try { await ensureFull(); } catch (e) {} }
+  let root = $("#printroot"); if (!root) { root = document.createElement("div"); root.id = "printroot"; document.body.appendChild(root); }
+  root.innerHTML = `<div class="pp">${notesItems().join("")}</div>`;
+  document.documentElement.classList.add("printing");
+  const done = () => { document.documentElement.classList.remove("printing"); root.innerHTML = ""; };
+  window.addEventListener("afterprint", done, { once: true });
+  setTimeout(() => { try { window.print(); } catch (e) { done(); toast("当前环境不支持打印"); } }, 60);
+}
+function vExport() {
+  const nv = Object.keys(VOC).filter(k => lx(k)).length, ns = Object.keys(SEN).length;
+  return `<div class="sechead"><h2>导出</h2></div>
+  <div class="grid2">
+   <div class="panel" id="s-pdf"><h3>导出 PDF（详细学习笔记）</h3><p class="muted" style="font-size:13px">包含学习概况、每个点学单词的音标、词性、释义、词形与原文例句，以及每个分析过句子的翻译、主干、从句、时态语态和特殊用法标注。</p><div class="row"><span class="tag">单词 ${nv}</span><span class="tag">句子 ${ns}</span></div>
+   <div class="row" style="margin-top:10px">${PWA ? `<button class="btn" data-act="printnotes" ${nv + ns ? "" : "disabled"}>${I.out}文字版 PDF（推荐）</button>` : ""}<button class="btn ${PWA ? "ghost" : ""}" data-act="pdf" ${nv + ns ? "" : "disabled"}>${I.out}图片版 PDF</button></div>
+   ${PWA ? `<p class="faint" style="font-size:12px;margin:8px 0 0">文字版：打开系统打印窗口，目标选「存储为 PDF」（手机上在打印预览里点分享）。文件小、文字可搜索可复制。图片版：直接生成文件，排版固定，但文件较大。</p>` : ""}</div>
+   <div class="panel" id="s-xlsx"><h3>导出 Excel（单词表）</h3><p class="muted" style="font-size:13px">只导出点学过的单词：单词、音标、词性与释义、英文释义、词形变化、出处文章、原文例句与翻译、点击次数、首次学习日期、熟练度。</p><button class="btn" style="margin-top:10px" data-act="xlsx" ${nv ? "" : "disabled"}>${I.out}生成 Excel</button></div>
+  </div><div id="expmsg" class="muted" style="margin-top:12px;font-size:13px"></div>`;
+}
+
+/* ---------- coins: streak repair ---------- */
+const FRZ_COST = 60;
+function frzState() {
+  const k = todayK(), y = addDays(k, -1), need = !S.days.includes(y) && S.days.includes(addDays(k, -2)), cool = !!(S.frz && diffDays(S.frz, k) < 7);
+  return { need, cool, y, ok: need && !cool && S.coins >= FRZ_COST };
+}
+function freezeHTML() {
+  const f = frzState();
+  return `<div class="panel frz" style="margin-bottom:12px"><div class="row" style="justify-content:space-between;flex-wrap:nowrap;gap:10px"><div><b>补签卡 · ${FRZ_COST} 金币</b><div class="muted" style="font-size:12.5px">昨天断了一天？花金币补上，连续天数和奖励倍率不清零。每 7 天限用 1 次。</div><div class="faint" style="font-size:12px;margin-top:2px">${f.need ? (f.cool ? "冷却中：上次补签在 " + S.frz : S.coins < FRZ_COST ? "金币不足（现有 " + S.coins + "）" : "可以补签 " + f.y) : "现在不需要补签"} · 金币 ${S.coins}</div></div><button class="btn sm gold" data-act="freeze" ${f.ok ? "" : "disabled"}>补签</button></div></div>`;
+}
+
+/* ---------- study timer v1.9 ---------- */
+const TM_OTHER = "另一个窗口正在计时";
+function tmBump() {
+  const now = Date.now(); TM.input = now;
+  if (now - (TM.ownW || 0) > 3000) { TM.ownW = now; try { localStorage.setItem("tedjd:tmown", JSON.stringify({ id: TAB_ID, at: now })); } catch (e) {} }
+}
+function tmWhy(now) {
+  const t = tmS();
+  if (t.pause) return "手动暂停";
+  if (AUD.el && !AUD.el.paused) return "";               // live audio counts even with the screen off
+  if (document.hidden) return "后台";
+  const o = LS.get("tmown"); if (o && o.id !== TAB_ID && o.at > TM.input && now - o.at < TM_IDLE * 1000) return TM_OTHER;
+  if (TM_SKIP.has(VIEW)) return "本页不计时";
+  if (PLAY && PLAY.on) return "";
+  if (REC) return "";
+  if (now - TM.input > TM_IDLE * 1000) return "无操作";
+  return "";
+}
+function tmAdd(t, dt, now) {
+  if (!t.run) t.run = { s: now, last: now, act: 0, b: 0 };
+  const k = todayK();
+  t.run.act += dt; t.run.last = now; t.day[k] = (t.day[k] || 0) + dt; t.tot += dt; t.best = Math.max(t.best, t.run.act);
+  while (t.run.act >= (t.run.b + 1) * TM_BLOCK) { t.run.b++; tmPush("c", t.run.b); toast(t.run.b === 1 ? "连续学习满 15 分钟，奖励已可领取" : `连续第 ${t.run.b} 个 15 分钟，专注加成 ×${tmCombo(t.run.b)}`); }
+  tmCheckGoals(t);
+}
+function tmTick() {
+  const now = Date.now(), dt = TM.last ? Math.min(2, Math.max(0, (now - TM.last) / 1000)) : 0; TM.last = now;
+  const t = tmS();
+  TM.why = tmWhy(now); TM.act = !TM.why;
+  if (TM.why !== TM_OTHER && t.run && now - t.run.last > TM_GAP * 1000) { tmEndRun(t); save(); }
+  if (TM.act && dt > 0) { tmAdd(t, dt, now); if (now - TM.saveAt > 20000) { TM.saveAt = now; tmPrune(t); save(); } }
+  else if (t.run && TM.why === "本页不计时" && now - TM.input < TM_IDLE * 1000) t.run.last = now;   // settings etc. pause the clock but keep the run alive
+  tmPaint();
+}
+function tmStart() {
+  if (TM.iv) return;
+  ["pointerdown", "keydown", "wheel", "touchstart"].forEach(ev => document.addEventListener(ev, tmBump, { capture: true, passive: true }));
+  window.addEventListener("scroll", tmBump, { capture: true, passive: true });
+  document.addEventListener("visibilitychange", () => {
+    const now = Date.now(); TM.last = now;
+    if (document.hidden) { TM.bg = AUD.el && !AUD.el.paused ? { w: now, a: AUD.el.currentTime, tot: tmS().tot, r: AUD.el.playbackRate || 1 } : null; save(); return; }
+    if (TM.bg && AUD.el) {   // audio kept playing while the screen was off and timers were frozen
+      const t = tmS(), wall = (now - TM.bg.w) / 1000, played = Math.max(0, (AUD.el.currentTime - TM.bg.a) / TM.bg.r);
+      const extra = Math.min(wall, played) - (t.tot - TM.bg.tot);
+      if (extra > 2) { if (t.run) t.run.last = now; tmAdd(t, extra, now); save(); }
+    }
+    TM.bg = null; tmBump(); tmTick();
+  });
+  window.addEventListener("pagehide", () => save());
+  const t = tmS(); if (t.run && Date.now() - t.run.last > TM_GAP * 1000) { tmEndRun(t); save(); }
+  TM.last = Date.now(); TM.iv = setInterval(tmTick, 1000);
+}
+function tmLiveHTML() {
+  const t = tmS(), k = todayK(), today = t.day[k] || 0, g = tmGoal(), r = t.run, w = tmWeek(k);
+  const pg = Math.min(1, today / g), C = 2 * Math.PI * 52;
+  const st = TM.act ? "计时中" : "已暂停 · " + TM.why;
+  const runLeft = r ? TM_BLOCK - (r.act % TM_BLOCK) : TM_BLOCK, nextN = r ? r.b + 1 : 1;
+  const tail = r ? r.act - r.b * TM_BLOCK : 0, canHalf = r && tail > 0 && t.pool + tail >= TM_BLOCK;
+  const pend = t.pend;
+  const sum = pend.reduce((a, p) => [a[0] + p.xp, a[1] + p.co], [0, 0]);
+  return `<div class="tmhero"><svg class="tmbig" viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="b0"/><circle cx="60" cy="60" r="52" class="b1" stroke-dasharray="${(C * pg).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 60 60)"/><text x="60" y="58" text-anchor="middle" class="v num">${Math.floor(today / 60)}</text><text x="60" y="78" text-anchor="middle" class="u">/ ${t.plan.mins} 分钟</text></svg>
+   <div class="tmstats"><div><span class="faint">状态</span><b class="${TM.act ? "ok" : ""}">${esc(st)}</b></div><div><span class="faint">本次连续</span><b class="num">${r ? mmss(r.act) : "—"}</b></div><div><span class="faint">碎片累计</span><b class="num">${mmss(t.pool)} / 15:00</b></div><div><span class="faint">本周达标</span><b class="num">${w.met} / ${t.plan.days} 天</b></div></div></div>
+  <div class="tmbar"><div class="row"><b>连续进度</b><span class="faint num">${r ? `再学 ${mmss(runLeft)} → 第 ${nextN} 段${nextN > 1 ? " ×" + tmCombo(nextN) : ""}` : "开始学习即开始一段新的连续计时"}</span></div><div class="bar"><i style="width:${r ? Math.round((r.act % TM_BLOCK) / TM_BLOCK * 100) : 0}%"></i></div></div>
+  <div class="tmbar gold"><div class="row"><b>碎片进度</b><span class="faint">中断后剩余的零散时间，累计满 15 分钟得半额奖励</span></div><div class="bar gold"><i style="width:${Math.round(Math.min(1, (t.pool + (canHalf ? 0 : 0)) / TM_BLOCK) * 100)}%"></i></div></div>
+  ${canHalf ? `<div class="tmhalf"><div><b>碎片 + 本次已够 15 分钟</b><span class="faint">现在结束本次，领半额（+10 XP）；或者再学 ${mmss(runLeft)}，拿连续全额（+${Math.round(TM_REW.c[0] * tmCombo(nextN))} XP）</span></div><button class="btn sm ghost" data-act="tmhalf">现在领半额</button></div>` : ""}
+  <div class="tmrew">${pend.length ? `<div class="tmrl">${Object.entries(pend.reduce((m, p) => { const key = p.t + (p.t === "c" ? p.n : ""); (m[key] = m[key] || { p, k: 0, xp: 0, co: 0 }); m[key].k++; m[key].xp += p.xp; m[key].co += p.co; return m; }, {})).map(([, v]) => `<div class="tmri ${v.p.t}"><span class="ic">${v.p.t === "f" ? "½" : v.p.t === "c" ? "15" : v.p.t === "g" ? I.flag : I.trophy}</span><div><b>${TM_NAME[v.p.t]}${v.p.t === "c" && v.p.n > 1 ? ` · 第 ${v.p.n} 段 ×${tmCombo(v.p.n)}` : ""}</b>${v.k > 1 ? `<span class="faint"> × ${v.k}</span>` : ""}</div><span class="num">+${v.xp} XP · +${v.co}</span></div>`).join("")}</div>
+   <button class="btn tmclaim" data-act="tmclaim">${I.gift}领取全部奖励（+${sum[0]} XP · +${sum[1]} 金币）</button>` : `<div class="faint" style="font-size:12.5px;text-align:center;padding:6px 0">暂无可领取的奖励。连续学满 15 分钟，或碎片时间累计满 15 分钟，就能领取。</div>`}</div>`;
+}
+function tmDraw() {
+  const box = $("#tmbody"); if (!box) return; const t = tmS();
+  TM.live = "";
+  box.innerHTML = `<div id="tmlive">${tmLiveHTML()}</div>
+  <div class="aisec"><h4>本周</h4><div id="tmwk">${tmWeekHTML()}</div></div>
+  <div class="aisec"><h4>学习计划</h4>${tmPlanHTML()}</div>
+  <details class="aisec tmrules"><summary>奖励与计时规则</summary>
+   <table class="tbl"><tr><th>奖励单位</th><th>条件</th><th>奖励</th></tr>
+   <tr><td>连续 15 分钟</td><td>一次不中断地学满 15 分钟，每满 15 分钟一份</td><td>+20 XP · +2 金币</td></tr>
+   <tr><td>专注加成</td><td>同一次连续学习的第 2 / 3 / 4 段起</td><td>×1.2 / ×1.4 / ×1.5，第 3 段起金币 +1</td></tr>
+   <tr><td>碎片 15 分钟（最小单位）</td><td>中断后剩下的零散时间累计满 15 分钟；碎片加上本次学习够 15 分钟时，也可以当场结束本次、领半额</td><td>半额：+10 XP · +1 金币</td></tr>
+   <tr><td>每日达标</td><td>当天学习时长达到每日目标</td><td>+30 XP · +5 金币</td></tr>
+   <tr><td>每周计划</td><td>本周（周一至周日）达标天数达到计划天数</td><td>+120 XP · +20 金币</td></tr></table>
+   <ul class="faint" style="font-size:12px;margin:8px 0 0;padding-left:18px"><li>App 在前台、且 2 分钟内有操作（点、滑、打字）或正在朗读/录音时计时；2 分钟没有操作自动暂停。</li><li>播放现场原声时，锁屏或切到后台也照常计时。</li><li>暂停或离开不超过 2 分钟，回来后仍算同一次连续学习；超过 2 分钟即中断，这一次不足 15 分钟的部分转入碎片累计。</li><li>设置、导出、成就、导入页面不计时，但只要还在操作就不会打断连续学习。</li><li>同时打开两个窗口时，只有最近操作的那个窗口计时。奖励需要手动领取，不会过期。</li></ul></details>
+  <div class="row" style="justify-content:center;margin-top:12px"><button class="btn sm ghost" data-act="tmpause">${t.pause ? I.play + "继续计时" : I.pause + "暂停计时"}</button></div>`;
+}
+
+/* ---------- on-device speech recognition for read-aloud (Whisper, shared with alignment) ---------- */
+function alnCall0(msg, ms) {
+  const k = msg.type === "load" ? "load" : (msg.id = ++ALN.seq);
+  return new Promise((res, rej) => {
+    const to = setTimeout(() => { delete ALN.wait[k]; rej(new Error("timeout")); }, ms || 180000);
+    ALN.wait[k] = { res: v => { clearTimeout(to); res(v); }, rej: er => { clearTimeout(to); rej(er); } };
+    alnWorker().postMessage(msg, msg.pcm ? [msg.pcm.buffer] : []);
+  });
+}
+/* one model load shared by everyone; recognition runs strictly one at a time */
+function alnCall(msg, ms) {
+  if (msg.type === "load") { if (!ALN.loadP) ALN.loadP = alnCall0(msg, ms).catch(e => { ALN.loadP = null; throw e; }); return ALN.loadP; }
+  const p = (ALN.chain || Promise.resolve()).then(() => alnCall0(msg, ms)); ALN.chain = p.catch(() => {}); return p;
+}
+function alnReset() { if (ALN.w) { try { ALN.w.terminate(); } catch (e) {} } ALN.w = null; ALN.wait = {}; ALN.loadP = null; ALN.chain = null; }
+async function asrCached() { try { const c = await caches.open("tedml-1"); const ks = await c.keys(); return ks.some(r => /decoder_model_merged/.test(r.url)); } catch (e) { return false; } }
+const asrOK = () => FULL && typeof Worker === "function" && typeof WebAssembly === "object" && !!(window.OfflineAudioContext || window.webkitOfflineAudioContext);
+async function asrText(blob, onp) {
+  const { pcm, dur } = await decodePCM(blob);
+  if (!dur || dur < 0.4) throw new Error("录音太短");
+  await alnCall({ type: "load" }, 600000);
+  const SR = 16000, parts = [];
+  for (let s = 0; s < pcm.length; s += 30 * SR) {
+    const win = pcm.slice(s, Math.min(pcm.length, s + 30 * SR)); if (win.length < SR * 0.3) break;
+    const r = await alnCall({ type: "run", pcm: win, opts: { return_timestamps: false } }, 240000);
+    parts.push(r.text || ""); onp && onp(Math.min(99, Math.round((s + win.length) / pcm.length * 100)));
+  }
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+function wordDiff(target, said) {
+  const norm = s => String(s || "").toLowerCase().replace(/[’‘]/g, "'").replace(/[-–—/]/g, " ").replace(/[^a-z0-9'\s]/g, " ").split(/\s+/).map(w => w.replace(/^'+|'+$/g, "")).filter(Boolean);
+  const A = norm(target), B = norm(said), n = A.length, m = B.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  let i = 0, j = 0; const out = [], miss = [];
+  while (i < n && j < m) { if (A[i] === B[j]) { out.push(`<span class="ok">${esc(A[i])}</span>`); i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push(`<span class="miss">${esc(A[i])}</span>`); miss.push(A[i]); i++; } else { out.push(`<span class="extra">${esc(B[j])}</span>`); j++; } }
+  while (i < n) { out.push(`<span class="miss">${esc(A[i])}</span>`); miss.push(A[i++]); } while (j < m) out.push(`<span class="extra">${esc(B[j++])}</span>`);
+  return { html: out.join(" "), acc: Math.round(dp[0][0] / Math.max(1, n) * 100), miss, said: B.join(" ") };
+}
+function speakDiffHTML(target, text, how) {
+  const d = wordDiff(target, text);
+  return `<div class="blk"><h4>发音识别比对（${how} · 准确率 ${d.acc}%）</h4><div class="diff">${d.html}</div><div class="legend"><span style="color:var(--ok)">绿色：读对</span><span style="color:var(--rose)">删除线：漏读或没被识别</span><span style="color:var(--gold)">斜体：多读或识别为其他词</span></div>${how === "本机模型" ? `<div class="faint" style="font-size:11.5px;margin-top:4px">本机模型会按常见说法“猜”你说的话，对轻微口音偏宽松；被标成删除线的词说明它确实没听清，值得重点练。</div>` : ""}</div>`;
+}
+let REC_BLOB = null, REC_TARGET = "";
+function gotRecording(blob, transcript, secs) {
+  if (MYURL) URL.revokeObjectURL(MYURL); MYURL = URL.createObjectURL(blob); REC_BLOB = blob;
+  const target = REC_TARGET = speakTarget(); const words = target.split(/\s+/).length;
+  S.stats.speak++; save(); checkBadges();
+  const myWpm = secs ? Math.round(words / secs * 60) : null;
+  $("#sresult").innerHTML = `<div class="cmp" style="margin-top:8px"><div>你的录音<b>${secs ? secs.toFixed(1) + " 秒" : "已载入"}</b>${myWpm ? myWpm + " 词/分" : ""}</div><div>原文朗读参考<b id="origdur">—</b><span id="origwpm"></span></div></div>
+  <audio id="myaudio" src="${MYURL}" controls style="width:100%;margin-top:8px"></audio>
+  <div class="row" style="margin-top:6px"><button class="btn sm" data-act="ab">先听我的，再听原声</button><button class="btn sm ghost" data-act="sorig">只听原声</button></div><div id="sdiff"></div>`;
+  if (transcript) $("#sdiff").innerHTML = speakDiffHTML(target, transcript, "浏览器识别") + (asrOK() ? `<button class="linkbtn" data-act="asrgo" style="margin-top:4px">用本机模型再识别一次</button>` : "");
+  else if (asrOK()) asrAuto(false);
+  else $("#sdiff").innerHTML = `<div class="faint" style="font-size:12px;margin-top:8px">当前环境不支持语音识别，可通过上面的对比播放自己判断差异。</div>`;
+}
+async function asrAuto(force) {
+  const box = $("#sdiff"); if (!box || !REC_BLOB) return;
+  if (!force && !(await asrCached())) { box.innerHTML = `<div class="note" style="margin-top:8px">这台设备上没有可用的在线语音识别（iPhone 主屏幕 App、国内网络下的 Chrome 都是这样）。可以用 App 内置的本机模型识别你的录音：完全离线运行，首次需下载约 60 MB，之后不再下载。<div class="row" style="margin-top:8px"><button class="btn sm" data-act="asrgo">${I.spark}本机识别</button></div></div>`; return; }
+  const blob = REC_BLOB, target = REC_TARGET;
+  box.innerHTML = `<div class="aiload" style="margin:8px 0">${I.spark}<span id="asrmsg">正在本机识别…</span></div>`;
+  const iv = setInterval(() => { const m = $("#asrmsg"); if (!m) return; const dl = Object.values(ALN.dl), got = dl.reduce((a, b) => a + b[0], 0), tot = dl.reduce((a, b) => a + b[1], 0); if (tot && got < tot) m.textContent = `首次使用：下载识别模型 ${(got / 1048576).toFixed(0)} / ${(tot / 1048576).toFixed(0)} MB`; else if (ALN.job) m.textContent = "正在本机识别（音频对齐也在进行，会稍慢）…"; }, 500);
+  try {
+    const text = await asrText(blob, p => { const m = $("#asrmsg"); if (m) m.textContent = "正在本机识别 " + p + "%"; });
+    if (REC_BLOB !== blob) return;
+    const b2 = $("#sdiff"); if (b2) b2.innerHTML = text ? speakDiffHTML(target, text, "本机模型") : `<div class="note" style="margin-top:8px">没有识别出英文内容，请靠近麦克风、在安静的地方再录一次。</div>`;
+  } catch (e) { const b2 = $("#sdiff"); if (b2) b2.innerHTML = `<div class="note" style="margin-top:8px">本机识别失败：${esc(e.message || "未知错误")}。<button class="linkbtn" data-act="asrgo">重试</button></div>`; }
+  finally { clearInterval(iv); }
+}
+
+/* ---------- dictation (听写精听) ---------- */
+const DCT = { key: "", i: 0, res: "", text: "", miss: [] };
+TABS.find(t => t.v === "practice").subs.push(["听写精听", "s-dict"]);
+const dictLive = () => PR_SRC === "t" && hasTR(PR_ID) && TR[PR_ID].audio;
+function dictPanel() {
+  const L = prList(), key = PR_ID + "|" + PR_SRC;
+  if (DCT.key !== key) Object.assign(DCT, { key, i: Math.min(PR_SI, L.length - 1), res: "", text: "", miss: [] });
+  return `<div class="panel player dictp" id="s-dict"><h3>听写精听</h3><p class="muted" style="font-size:12.5px;margin:-2px 0 8px">逐句听${dictLive() ? "现场原声" : "朗读"}，把听到的英文打出来，再逐词核对。连读、弱读、吞音在这里最容易暴露出来。</p>
+  <div class="row"><button class="btn sm ghost" data-act="dmove" data-d="-1">上一句</button><span class="muted num">第 ${DCT.i + 1}/${L.length} 句</span><button class="btn sm ghost" data-act="dmove" data-d="1">下一句</button></div>
+  <div class="row"><button class="btn" data-act="dplay">${I.play}播放这句</button><button class="btn ghost" data-act="dplay" data-slow="1">慢速</button><span class="faint" style="font-size:12px">可以反复听</span></div>
+  <textarea id="dta" class="txt wta" rows="2" placeholder="听到什么就打什么，拿不准的词也写上；回车核对" autocapitalize="off" autocorrect="off" spellcheck="false">${esc(DCT.text)}</textarea>
+  <div class="row" style="justify-content:space-between"><button class="linkbtn" data-act="dreveal">看答案</button><button class="btn" data-act="dcheck">核对</button></div>
+  <div id="dres">${DCT.res}</div>
+  <div class="faint" style="font-size:11.5px;margin-top:6px">已听写 ${S.stats.dict || 0} 句 · 正确率 90% 以上 ${S.stats.dictOk || 0} 句 · 90% 以上 +3 XP</div></div>`;
+}
+function dictRedraw() { const p = $("#s-dict"); if (p) p.outerHTML = dictPanel(); }
+function dictPlay(slow) {
+  const L = prList(), i = DCT.i;
+  if (dictLive()) {
+    const r0 = AUD.rate; if (slow) AUD.rate = 0.75;
+    const back = () => { AUD.rate = r0; if (AUD.el) AUD.el.playbackRate = r0; drawBar(); };
+    playAt(PR_ID, i, { seg: true, cb: slow ? back : null }); if (slow) setTimeout(back, 60000);
+  } else { const r0 = S.set.rate; if (slow) S.set.rate = 0.7; say(L[i], S.set.voice); S.set.rate = r0; }
+  markStudy();
+}
+function dictCheck() {
+  const ta = $("#dta"), typed = (ta ? ta.value : DCT.text).trim(); DCT.text = typed;
+  if (!typed) { toast("先写下你听到的内容"); return; }
+  const tgt = prList()[DCT.i], d = wordDiff(tgt, typed);
+  S.stats.dict = (S.stats.dict || 0) + 1; if (d.acc >= 90) S.stats.dictOk = (S.stats.dictOk || 0) + 1;
+  const xp = d.acc >= 90 ? 3 : d.acc >= 60 ? 1 : 0; S.xp += xp; markStudy(); save(); checkBadges(); renderChrome();
+  DCT.miss = [...new Set(d.miss.map(w => keyFor(w)).filter(k => k && !k.startsWith("~") && lx(k) && !VOC[k] && w2len(k)))].slice(0, 8);
+  DCT.res = `<div class="blk"><h4>核对结果 · 正确率 ${d.acc}%${xp ? ` <span class="tag g">+${xp} XP</span>` : ""}</h4><div class="diff">${d.html}</div><div class="ex" style="margin-top:6px"><div class="en">${esc(tgt)} <button class="say mini" data-act="dplay" aria-label="再听">${I.vol}</button></div></div>
+  ${DCT.miss.length ? `<div class="row" style="margin-top:6px"><span class="faint" style="font-size:12px">没听出来的词：${DCT.miss.map(k => esc(lx(k).w)).join("、")}</span><button class="btn sm ghost" data-act="dadd">加入生词本</button></div>` : ""}</div>`;
+  const r = $("#dres"); if (r) r.innerHTML = DCT.res;
+}
+const w2len = k => k.length > 2;
+
+/* ---------- v1.9 click actions ---------- */
+function act19(act, ds, t, e) {
+  switch (act) {
+    case "lsbarx": { const b = $(".lsbar"); if (b) b.remove(); return true; }
+    case "ioswarnok": LS.set("iosWarn", Date.now()); render(); return true;
+    case "baksnooze": LS.set("bakSnooze", Date.now()); render(); return true;
+    case "printnotes": printNotes(); return true;
+    case "freeze": { const f = frzState(); if (!f.ok) return true; S.coins -= FRZ_COST; S.days.push(f.y); S.days.sort(); S.frz = todayK(); save(); checkBadges(); render(); toast(`已补签 ${f.y}，现在连续 ${streak()} 天`); return true; }
+    case "tmhalf": { const s = tmS(); tmEndRun(s); save(); tmDraw(); tmPaint(); return true; }
+    case "flcheck": flCheck(); return true;
+    case "asrgo": asrAuto(true); return true;
+    case "dplay": dictPlay(!!ds.slow); return true;
+    case "dmove": { const n = prList().length; DCT.i = Math.max(0, Math.min(n - 1, DCT.i + +ds.d)); DCT.res = ""; DCT.text = ""; DCT.miss = []; dictRedraw(); return true; }
+    case "dcheck": dictCheck(); return true;
+    case "dreveal": { const ta = $("#dta"); if (ta) DCT.text = ta.value; DCT.res = `<div class="blk"><h4>答案</h4><div class="ex"><div class="en">${esc(prList()[DCT.i])}</div></div><div class="faint" style="font-size:12px">看过答案这句不计分。合上答案再听一遍、默写一遍，记得最牢。</div></div>`; const r = $("#dres"); if (r) r.innerHTML = DCT.res; return true; }
+    case "dadd": { const m = PR_SRC === "t" ? "t" : undefined; DCT.miss.forEach(k => { if (!VOC[k]) recordWord(k, PR_ID, DCT.i, m); }); toast(`已加入生词本 ${DCT.miss.length} 个`); DCT.miss = []; const b = t.closest(".row"); if (b) b.remove(); return true; }
+  }
+  return false;
+}
+document.addEventListener("keydown", e => {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === "Enter" && !e.shiftKey && e.target.id === "dta") { e.preventDefault(); dictCheck(); }
+  else if (e.key === "Enter" && e.target.id === "fsp") { e.preventDefault(); flCheck(); }
+});
+document.addEventListener("input", e => { if (e.target.id === "dta") DCT.text = e.target.value; });
+
 /* ---------- events ---------- */
 let resetArmed = false;
 document.addEventListener("click", e => {
@@ -3686,7 +4006,7 @@ document.addEventListener("click", e => {
     case "flash": startFlash(); break;
     case "flip": if (e.target.closest("[data-act=say]")) break; FL.flip = !FL.flip; drawFlash(); break;
     case "fl": rateFlash(+ds.r); break;
-    default: act18(act, ds, t, e); break;
+    default: if (!act18(act, ds, t, e)) act19(act, ds, t, e); break;
     case "pplay": if (PR_SRC === "t" && hasTR(PR_ID) && TR[PR_ID].audio) { if (AUD.el && !AUD.el.paused && AUD.aid === PR_ID) { AUD.el.pause(); t.innerHTML = I.play; } else { playAt(PR_ID, Math.max(0, AUD.aid === PR_ID ? AUD.last : 0)); t.innerHTML = I.pause; } break; } if (PLAY) stopSpeak(); else playFrom(0); break;
     case "pstop": stopSpeak(); $$(".pl").forEach(b => b.classList.remove("on")); break;
     case "pfrom": stopSpeak(); playFrom(+ds.i); break;
@@ -3722,7 +4042,7 @@ document.addEventListener("click", e => {
     case "startfull": closeModal(); if (ds.id !== READ_ID || VIEW !== "read") openRead(ds.id); else setMod(ds.id, 1); break;
     case "mod": setMod(READ_ID, +ds.i); break;
     case "playmod": case "playpara": closeSheet(); if (TR[READ_ID] && TR[READ_ID].audio) playAt(READ_ID, +ds.g); else audioPanel(READ_ID); break;
-    case "audiopanel": closeSheet(); audioPanel(VIEW === "practice" ? PR_ID : READ_ID); break;
+    case "audiopanel": { closeSheet(); const id = ds.id || (VIEW === "practice" ? PR_ID : READ_ID); if (id && TR[id]) audioPanel(id); break; }
     case "audiodel": if (t.dataset.armed) { closeSheet(); removeAudio(ds.id); toast("音频已删除"); } else { t.dataset.armed = 1; t.textContent = "再点一次确认"; } break;
     case "embed": { const box = $("#embedbox"); if (box) box.innerHTML = `<div class="embed"><iframe src="https://embed.ted.com/talks/${encodeURIComponent(ds.slug)}" allow="autoplay; fullscreen; encrypted-media" allowfullscreen loading="lazy" title="TED 官方播放器"></iframe></div>`; break; }
     case "segplay": playAt(READ_ID || PR_ID, +ds.g, { seg: true }); break;
